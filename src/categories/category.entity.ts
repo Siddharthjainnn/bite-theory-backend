@@ -1,12 +1,18 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import {
+  Entity, PrimaryGeneratedColumn, Column,
+  CreateDateColumn, UpdateDateColumn,
+} from 'typeorm';
 
 @Entity('categories')
 export class Category {
-  @PrimaryGeneratedColumn()
+  @PrimaryGeneratedColumn({ type: 'bigint' })
   id!: number;
 
   @Column({ type: 'varchar' })
   name!: string;
+
+  @Column({ type: 'text', nullable: true })
+  description!: string;
 
   @Column({ type: 'varchar' })
   slug!: string;

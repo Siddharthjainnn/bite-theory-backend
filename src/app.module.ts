@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { Category } from './category.entity';
-import { CategoriesController } from './categories.controller';
+
+import { CategoriesModule } from './categories/categories.module';
+import { ProductsModule } from './products/products.module';
 
 @Module({
   imports: [
@@ -18,10 +20,12 @@ import { CategoriesController } from './categories.controller';
       database: process.env.DB_NAME,
       autoLoadEntities: true,
       synchronize: false,
+      ssl: { rejectUnauthorized: false },   // ← ADD THIS LINE (Neon needs SSL)
     }),
-    TypeOrmModule.forFeature([Category]),
+    CategoriesModule,
+    ProductsModule,
   ],
-  controllers: [AppController, CategoriesController],
+  controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
