@@ -1,8 +1,6 @@
 import { IsString, IsNotEmpty, IsNumber, IsOptional, IsIn } from 'class-validator';
-
 const STATUSES = ['order_received', 'order_confirmed', 'preparing_food', 'food_ready',
-  'assigned_to_delivery_partner', 'out_for_delivery', 'arriving_soon', 'delivered', 'cancelled'];
-
+  'assigned_to_delivery', 'out_for_delivery', 'arriving_soon', 'delivered', 'cancelled'];
 export class CreateOrderDto {
   @IsString() @IsNotEmpty() orderNumber!: string;
   @IsNumber() userId!: number;
