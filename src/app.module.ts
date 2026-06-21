@@ -7,6 +7,8 @@ import { AppService } from './app.service';
 
 import { CategoriesModule } from './categories/categories.module';
 import { ProductsModule } from './products/products.module';
+import { OrdersModule } from './orders/orders.module';
+import { OrderItemsModule } from './order-items/order-items.module';
 
 @Module({
   imports: [
@@ -20,10 +22,12 @@ import { ProductsModule } from './products/products.module';
       database: process.env.DB_NAME,
       autoLoadEntities: true,
       synchronize: false,
-      ssl: { rejectUnauthorized: false },   // ← ADD THIS LINE (Neon needs SSL)
+      ssl: { rejectUnauthorized: false },
     }),
     CategoriesModule,
     ProductsModule,
+    OrdersModule,
+    OrderItemsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
