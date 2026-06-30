@@ -5,7 +5,7 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-
+  app.setGlobalPrefix('api');
   app.enableCors({
     origin: '*', // allow all for now; we'll lock to your Vercel domain later
   });
