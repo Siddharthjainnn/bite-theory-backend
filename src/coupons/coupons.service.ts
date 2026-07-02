@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Coupon } from './coupon.entity';
 import { CreateCouponDto } from './create-coupon.dto';
 import { UpdateCouponDto } from './update-coupon.dto';
+import { computeCouponDiscount } from './coupon.util';
 
 @Injectable()
 export class CouponService {
@@ -14,6 +15,16 @@ export class CouponService {
 
   findAll() {
     return this.repo.find({ order: { id: 'DESC' } });
+  }
+
+  /** Validate a coupon code for a given subtotal (no usage bump here). */
+  async validate(code: string, subtotal: number) {
+    const coupon = await this.repo
+      .createQueryBuilder('c')
+      .where('UPPER(c.code) = UPPER(:code)', { code: (code || '').trim() })
+      .getOne();
+    const result = computeCouponDiscount(coupon as any, Number(subtotal) || 0);
+    return { ...result, couponId: result.valid && coupon ? Number(coupon.id) : null };
   }
 
   async findOne(id: number) {

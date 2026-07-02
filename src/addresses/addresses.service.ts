@@ -12,8 +12,11 @@ export class AddressService {
     private readonly repo: Repository<Address>,
   ) {}
 
-  findAll() {
-    return this.repo.find({ order: { id: 'DESC' } });
+  findAll(userId?: number) {
+    return this.repo.find({
+      where: userId ? { userId } : {},
+      order: { isDefault: 'DESC', id: 'DESC' },
+    });
   }
 
   async findOne(id: number) {
@@ -22,7 +25,15 @@ export class AddressService {
     return item;
   }
 
-  create(dto: CreateAddressDto) {
+  async create(dto: CreateAddressDto) {
+    // first address, or explicitly flagged, becomes default
+    if (dto.userId) {
+      const count = await this.repo.count({ where: { userId: dto.userId } });
+      if (count === 0) dto.isDefault = true;
+      else if (dto.isDefault) {
+        await this.repo.update({ userId: dto.userId }, { isDefault: false });
+      }
+    }
     const item = this.repo.create(dto as Partial<Address>);
     return this.repo.save(item);
   }

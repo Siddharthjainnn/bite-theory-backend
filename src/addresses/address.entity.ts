@@ -32,4 +32,9 @@ export class Address {
   @Column({ type: 'timestamptz', name: 'created_at', nullable: true })
   createdAt: Date;
 
+  @Column({ type: 'numeric', name: 'latitude', precision: 10, scale: 7, nullable: true })
+  latitude: number;
+
+  @Column({ type: 'numeric', name: 'longitude', precision: 10, scale: 7, nullable: true })
+  longitude: number;
 }

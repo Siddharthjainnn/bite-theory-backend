@@ -2,6 +2,7 @@ import {
   Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
 } from '@nestjs/common';
 import { CouponService } from './coupons.service';
+import { ValidateCouponDto } from './validate-coupon.dto';
 import { CreateCouponDto } from './create-coupon.dto';
 import { UpdateCouponDto } from './update-coupon.dto';
 
@@ -12,6 +13,12 @@ export class CouponController {
   @Get()
   findAll() {
     return this.service.findAll();
+  }
+
+  /** Customer-facing: validate a code against a cart subtotal. */
+  @Post('validate')
+  validate(@Body() dto: ValidateCouponDto) {
+    return this.service.validate(dto.code, dto.subtotal);
   }
 
   @Get(':id')

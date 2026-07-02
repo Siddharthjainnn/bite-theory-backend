@@ -29,4 +29,12 @@ export class DeliveryPartner {
   @Column({ type: 'text', name: 'id_proof', nullable: true })
   idProof: string;
 
+  @Column({ type: 'numeric', name: 'current_lat', precision: 10, scale: 7, nullable: true })
+  currentLat: number;
+
+  @Column({ type: 'numeric', name: 'current_lng', precision: 10, scale: 7, nullable: true })
+  currentLng: number;
+
+  @Column({ type: 'timestamptz', name: 'location_updated_at', nullable: true })
+  locationUpdatedAt: Date;
 }

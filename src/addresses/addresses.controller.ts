@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
 } from '@nestjs/common';
 import { AddressService } from './addresses.service';
 import { CreateAddressDto } from './create-address.dto';
@@ -10,8 +10,8 @@ export class AddressController {
   constructor(private readonly service: AddressService) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('userId') userId?: string) {
+    return this.service.findAll(userId ? Number(userId) : undefined);
   }
 
   @Get(':id')

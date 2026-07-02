@@ -1,6 +1,35 @@
-import { IsString, IsNotEmpty, IsNumber, IsOptional, IsIn } from 'class-validator';
-const STATUSES = ['order_received', 'order_confirmed', 'preparing_food', 'food_ready',
+import {
+  IsString, IsNotEmpty, IsNumber, IsOptional, IsIn, IsArray,
+  ValidateNested, Min, IsBoolean,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+
+export const ORDER_STATUSES = ['order_received', 'order_confirmed', 'preparing_food', 'food_ready',
   'assigned_to_delivery', 'out_for_delivery', 'arriving_soon', 'delivered', 'cancelled'];
+
+export class CheckoutItemDto {
+  @IsNumber() productId!: number;
+  @IsNumber() @Min(1) quantity!: number;
+}
+
+/** Swiggy-style checkout: server computes prices, discount, totals. */
+export class CheckoutDto {
+  @IsNumber() userId!: number;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => CheckoutItemDto)
+  items!: CheckoutItemDto[];
+
+  @IsOptional() @IsNumber() addressId?: number;
+  @IsOptional() @IsString() deliveryAddress?: string;
+  @IsOptional() @IsNumber() deliveryLat?: number;
+  @IsOptional() @IsNumber() deliveryLng?: number;
+
+  @IsOptional() @IsString() couponCode?: string;
+  @IsOptional() @IsBoolean() useWallet?: boolean;
+  @IsOptional() @IsIn(['cod', 'online']) paymentMethod?: string;
+  @IsOptional() @IsString() deliverySlot?: string;
+}
+
+/** Legacy admin create (kept for admin panel compatibility). */
 export class CreateOrderDto {
   @IsString() @IsNotEmpty() orderNumber!: string;
   @IsNumber() userId!: number;
@@ -19,9 +48,10 @@ export class UpdateOrderDto {
   @IsOptional() @IsNumber() addressId?: number;
   @IsOptional() @IsString() deliverySlot?: string;
   @IsOptional() @IsNumber() deliveryPartnerId?: number;
+  @IsOptional() @IsNumber() etaMinutes?: number;
 }
 
 export class UpdateOrderStatusDto {
-  @IsIn(STATUSES) status!: string;
+  @IsIn(ORDER_STATUSES) status!: string;
   @IsOptional() @IsString() note?: string;
 }

@@ -13,9 +13,19 @@ export class Order {
   @Column({ type: 'numeric', default: 0 }) tax!: number;
   @Column({ name: 'wallet_used', type: 'numeric', default: 0 }) walletUsed!: number;
   @Column({ type: 'numeric' }) total!: number;
-  @Column({ type: 'varchar', default: 'order_received' }) status!: string; // real type: order_status enum
+  @Column({ type: 'varchar', default: 'order_received' }) status!: string;
   @Column({ name: 'delivery_slot', type: 'varchar', nullable: true }) deliverySlot!: string;
   @Column({ name: 'delivery_partner_id', type: 'bigint', nullable: true }) deliveryPartnerId!: number;
   @CreateDateColumn({ name: 'placed_at' }) placedAt!: Date;
   @UpdateDateColumn({ name: 'updated_at' }) updatedAt!: Date;
+
+  /* location + lifecycle (Swiggy-style tracking) */
+  @Column({ name: 'delivery_lat', type: 'numeric', precision: 10, scale: 7, nullable: true }) deliveryLat!: number;
+  @Column({ name: 'delivery_lng', type: 'numeric', precision: 10, scale: 7, nullable: true }) deliveryLng!: number;
+  @Column({ name: 'delivery_address', type: 'text', nullable: true }) deliveryAddress!: string;
+  @Column({ name: 'accepted_at', type: 'timestamptz', nullable: true }) acceptedAt!: Date;
+  @Column({ name: 'picked_up_at', type: 'timestamptz', nullable: true }) pickedUpAt!: Date;
+  @Column({ name: 'delivered_at', type: 'timestamptz', nullable: true }) deliveredAt!: Date;
+  @Column({ name: 'cancelled_at', type: 'timestamptz', nullable: true }) cancelledAt!: Date;
+  @Column({ name: 'eta_minutes', type: 'integer', nullable: true }) etaMinutes!: number;
 }

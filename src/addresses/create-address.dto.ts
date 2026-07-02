@@ -33,4 +33,11 @@ export class CreateAddressDto {
   @IsBoolean()
   isDefault?: boolean;
 
+  @IsOptional()
+  @IsNumber()
+  latitude?: number;
+
+  @IsOptional()
+  @IsNumber()
+  longitude?: number;
 }

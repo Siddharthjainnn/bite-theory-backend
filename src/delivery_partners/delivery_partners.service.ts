@@ -38,4 +38,10 @@ export class DeliveryPartnerService {
     await this.repo.remove(item);
     return { deleted: true, id };
   }
+
+  async updateLocation(id: number, lat: number, lng: number) {
+    const item = await this.findOne(id);
+    Object.assign(item, { currentLat: lat, currentLng: lng, locationUpdatedAt: new Date() });
+    return this.repo.save(item);
+  }
 }

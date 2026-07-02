@@ -24,6 +24,15 @@ export class DeliveryPartnerController {
     return this.service.create(dto);
   }
 
+  /** Rider app / admin pings live location here. */
+  @Patch(':id/location')
+  updateLocation(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { lat: number; lng: number },
+  ) {
+    return this.service.updateLocation(id, Number(body.lat), Number(body.lng));
+  }
+
   @Patch(':id')
   update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateDeliveryPartnerDto) {
     return this.service.update(id, dto);
