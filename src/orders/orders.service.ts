@@ -210,7 +210,7 @@ export class OrdersService {
          VALUES ($1,$2,$3,$4)`,
         [orderId, dto.paymentMethod || 'cod', total, dto.paymentMethod === 'online' ? 'pending' : 'pending']);
 
-      /* 12) loyalty: 1 point per ₹100 of subtotal */
+      /* 12) loyalty: 1 point per ₹100 of subtotal, then auto-upgrade tier */
       const points = Math.floor(subtotal / 100);
       if (points > 0) {
         await mgr.query(
@@ -220,6 +220,15 @@ export class OrdersService {
         await mgr.query(
           `UPDATE users SET loyalty_points = COALESCE(loyalty_points,0) + $1 WHERE id = $2`,
           [points, dto.userId]);
+        // tiers by lifetime points: silver 200 · gold 500 · platinum 1000
+        await mgr.query(
+          `UPDATE users SET loyalty_level = CASE
+             WHEN loyalty_points >= 1000 THEN 'platinum'::loyalty_tier
+             WHEN loyalty_points >= 500  THEN 'gold'::loyalty_tier
+             WHEN loyalty_points >= 200  THEN 'silver'::loyalty_tier
+             ELSE 'bronze'::loyalty_tier
+           END
+           WHERE id = $1`, [dto.userId]);
       }
 
       return { ...order, id: orderId, items: lines, pointsEarned: points };

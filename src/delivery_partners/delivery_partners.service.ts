@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DeliveryPartner } from './delivery-partner.entity';
@@ -51,5 +51,19 @@ export class DeliveryPartnerService {
       throw new NotFoundException('No active rider found with this mobile number');
     }
     return item;
+  }
+
+  /**
+   * Rider login. If RIDER_LOGIN_CODE is set on the server, the rider must
+   * supply the matching code (a shared secret you hand out to riders) in
+   * addition to their mobile number. If it isn't set, we fall back to the
+   * old mobile-only lookup so existing riders keep working after deploy.
+   */
+  async login(mobile: string, code: string) {
+    const expected = process.env.RIDER_LOGIN_CODE;
+    if (expected && code !== expected) {
+      throw new UnauthorizedException('Invalid rider access code');
+    }
+    return this.findByMobile(mobile);
   }
 }

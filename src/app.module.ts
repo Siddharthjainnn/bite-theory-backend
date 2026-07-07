@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
   import { ServeStaticModule } from '@nestjs/serve-static';
     import { join } from 'path';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AdminWriteGuard } from './common/admin-write.guard';
 
 // existing modules
 import { CategoriesModule } from './categories/categories.module';
@@ -84,6 +86,9 @@ import { AuditLogModule } from './audit_logs/audit_logs.module';
     UploadModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: AdminWriteGuard },
+  ],
 })
 export class AppModule {}

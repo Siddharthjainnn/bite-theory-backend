@@ -14,10 +14,10 @@ export class DeliveryPartnerController {
     return this.service.findAll();
   }
 
-  /** Rider portal login: mobile number lookup. */
+  /** Rider portal login: mobile number + shared access code. */
   @Post('login')
-  login(@Body() body: { mobile: string }) {
-    return this.service.findByMobile((body.mobile || '').trim());
+  login(@Body() body: { mobile: string; code?: string }) {
+    return this.service.login((body.mobile || '').trim(), (body.code || '').trim());
   }
 
   @Get(':id')
