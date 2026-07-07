@@ -12,8 +12,12 @@ export class NotificationService {
     private readonly repo: Repository<Notification>,
   ) {}
 
-  findAll() {
-    return this.repo.find({ order: { id: 'DESC' } });
+  findAll(userId?: number) {
+    return this.repo.find({
+      where: userId ? { userId } : {},
+      order: { id: 'DESC' },
+      take: 30,
+    });
   }
 
   async findOne(id: number) {

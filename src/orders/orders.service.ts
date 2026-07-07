@@ -316,7 +316,65 @@ export class OrdersService {
           isOnline ? (dto.razorpayPaymentId || null) : null,
         ]);
 
-      /* 12) loyalty: 1 point per ₹100 of subtotal, then auto-upgrade tier */
+      /* 12) inventory decrement — reduce stock, update status, hide sold-out products */
+      for (const l of lines) {
+        const inv = await mgr.query(
+          `UPDATE inventory
+              SET quantity = GREATEST(COALESCE(quantity,0) - $1, 0),
+                  stock_status = CASE
+                    WHEN COALESCE(quantity,0) - $1 <= 0 THEN 'out_of_stock'
+                    WHEN COALESCE(quantity,0) - $1 <= COALESCE(low_threshold, 5) THEN 'low'
+                    ELSE 'in_stock' END,
+                  updated_at = now()
+            WHERE product_id = $2
+            RETURNING quantity`,
+          [l.quantity, l.productId]);
+        const rows = Array.isArray(inv[0]) ? inv[0] : inv;
+        if (rows.length && Number(rows[0].quantity) <= 0) {
+          // sold out → hide from the storefront (catalog only shows status='active')
+          await mgr.query(
+            `UPDATE products SET status = 'inactive', updated_at = now() WHERE id = $1`,
+            [l.productId]);
+        }
+      }
+
+      /* 13) referral reward — first order of a referred user pays the referrer ₹50 */
+      const REFERRAL_REWARD = 50;
+      const ref = await mgr.query(
+        `SELECT id, referrer_id FROM referrals
+          WHERE referred_user_id = $1 AND COALESCE(is_converted, false) = false
+          LIMIT 1 FOR UPDATE`, [dto.userId]);
+      if (ref.length) {
+        const prior = await mgr.query(
+          `SELECT COUNT(*)::int AS n FROM orders WHERE user_id = $1 AND id <> $2`,
+          [dto.userId, orderId]);
+        if (Number(prior[0].n) === 0) {
+          const referrerId = Number(ref[0].referrer_id);
+          await mgr.query(
+            `UPDATE users SET wallet_balance = COALESCE(wallet_balance,0) + $1, updated_at = now()
+              WHERE id = $2`, [REFERRAL_REWARD, referrerId]);
+          await mgr.query(
+            `INSERT INTO wallet_transactions (user_id, type, amount, reason, order_id)
+             VALUES ($1,'credit',$2,'Referral reward — your friend placed their first order!',$3)`,
+            [referrerId, REFERRAL_REWARD, orderId]);
+          await mgr.query(
+            `UPDATE referrals SET is_converted = true, rewarded = true, reward_amount = $1
+              WHERE id = $2`, [REFERRAL_REWARD, ref[0].id]);
+          await mgr.query(
+            `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+             VALUES ($1,$2,'in_app','🎉 You earned ₹${REFERRAL_REWARD}!','Your friend just placed their first order. ₹${REFERRAL_REWARD} has been added to your wallet.',true)`,
+            [referrerId, orderId]);
+        }
+      }
+
+      /* 14) order-confirmed notification for the customer */
+      await mgr.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app','🛎️ Order placed!',$3,true)`,
+        [dto.userId, orderId,
+         `Order ${orderNumber} is confirmed — ₹${total} · we'll start cooking right away.`]);
+
+      /* 15) loyalty: 1 point per ₹100 of subtotal, then auto-upgrade tier */
       const points = Math.floor(subtotal / 100);
       if (points > 0) {
         await mgr.query(
@@ -372,6 +430,31 @@ export class OrdersService {
     if (dto.status === 'cancelled') order.cancelledAt = now;
     const saved = await this.repo.save(order);
     await this.historyRepo.save(this.historyRepo.create({ orderId: id, status: dto.status, note: dto.note }));
+
+    /* COD: collected on the doorstep → mark the payment row paid */
+    if (dto.status === 'delivered') {
+      await this.dataSource.query(
+        `UPDATE payments SET status = 'paid'
+          WHERE order_id = $1 AND method = 'cod' AND status = 'pending'`, [id]);
+    }
+
+    /* friendly in-app notification for the customer */
+    const MSG: Record<string, { title: string; body: string }> = {
+      order_confirmed:      { title: '✅ Order confirmed', body: 'The kitchen has accepted your order.' },
+      preparing_food:       { title: '👨‍🍳 Cooking started', body: 'Your food is being freshly prepared.' },
+      food_ready:           { title: '🍱 Food is ready', body: 'Packed and waiting for a rider.' },
+      assigned_to_delivery: { title: '🛵 Rider assigned', body: 'A delivery partner is picking up your order.' },
+      out_for_delivery:     { title: '🚀 Out for delivery', body: 'Your order is on its way. Track it live!' },
+      delivered:            { title: '🎉 Delivered — enjoy!', body: 'Hope it was delicious. Rate your order?' },
+      cancelled:            { title: '❌ Order cancelled', body: 'Your order was cancelled. Any payment will be refunded.' },
+    };
+    const m = MSG[dto.status];
+    if (m && saved.userId) {
+      await this.dataSource.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app',$3,$4,true)`,
+        [saved.userId, id, m.title, `Order ${saved.orderNumber || '#' + id}: ${m.body}`]);
+    }
     return saved;
   }
 

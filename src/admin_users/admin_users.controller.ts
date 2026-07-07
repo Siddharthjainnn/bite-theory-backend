@@ -19,6 +19,16 @@ export class AdminUserController {
     return this.service.findOne(id);
   }
 
+  @Post('login')
+  login(@Body() body: { email: string; password: string }) {
+    return this.service.login(body.email, body.password);
+  }
+
+  @Post('seed')
+  seed(@Body() body: { secret: string; email: string; password: string; name?: string }) {
+    return this.service.seed(body.secret, body.email, body.password, body.name);
+  }
+
   @Post()
   create(@Body() dto: CreateAdminUserDto) {
     return this.service.create(dto);

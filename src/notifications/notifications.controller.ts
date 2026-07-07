@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
 } from '@nestjs/common';
 import { NotificationService } from './notifications.service';
 import { CreateNotificationDto } from './create-notification.dto';
@@ -10,8 +10,8 @@ export class NotificationController {
   constructor(private readonly service: NotificationService) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('userId') userId?: string) {
+    return this.service.findAll(userId ? Number(userId) : undefined);
   }
 
   @Get(':id')

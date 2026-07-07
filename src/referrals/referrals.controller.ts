@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
 } from '@nestjs/common';
 import { ReferralService } from './referrals.service';
 import { CreateReferralDto } from './create-referral.dto';
@@ -10,8 +10,14 @@ export class ReferralController {
   constructor(private readonly service: ReferralService) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('referrerId') referrerId?: string) {
+    return this.service.findAll(referrerId ? Number(referrerId) : undefined);
+  }
+
+  /** A new user enters a friend's referral code (public write, guard-allow-listed). */
+  @Post('claim')
+  claim(@Body() body: { userId: number; code: string }) {
+    return this.service.claim(Number(body.userId), String(body.code || ''));
   }
 
   @Get(':id')

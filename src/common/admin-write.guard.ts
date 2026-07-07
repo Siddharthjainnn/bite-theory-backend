@@ -39,6 +39,9 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/users$/ },                  // upsert on login
     { method: 'PATCH', path: /^\/users\/[^/]+$/ },          // save my profile/mobile
     { method: 'POST', path: /^\/support-tickets$/ },        // contact support
+    { method: 'POST', path: /^\/admin-users\/login$/ },     // admin email+password login
+    { method: 'POST', path: /^\/admin-users\/seed$/ },      // one-time bootstrap (secret-gated)
+    { method: 'POST', path: /^\/referrals\/claim$/ },       // new user enters a friend's code
   ];
 
   canActivate(context: ExecutionContext): boolean {
