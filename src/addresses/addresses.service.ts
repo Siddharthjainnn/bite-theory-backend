@@ -39,7 +39,11 @@ export class AddressService {
   }
 
   async update(id: number, dto: UpdateAddressDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
+    // making this one default → clear the flag on the user's other addresses
+    if (dto.isDefault && existing.userId) {
+      await this.repo.update({ userId: existing.userId } as any, { isDefault: false });
+    }
     await this.repo.update(id, dto as Partial<Address>);
     return this.findOne(id);
   }

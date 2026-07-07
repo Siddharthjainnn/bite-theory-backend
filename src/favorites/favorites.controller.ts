@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
 } from '@nestjs/common';
 import { FavoriteService } from './favorites.service';
 import { CreateFavoriteDto } from './create-favorite.dto';
@@ -9,9 +9,22 @@ import { UpdateFavoriteDto } from './update-favorite.dto';
 export class FavoriteController {
   constructor(private readonly service: FavoriteService) {}
 
+  /** GET /favorites?userId=12 → favorites joined with product info */
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('userId') userId?: string) {
+    return this.service.findAll(userId ? Number(userId) : undefined);
+  }
+
+  /** GET /favorites/ids?userId=12 → [3, 8, 21] for painting hearts */
+  @Get('ids')
+  ids(@Query('userId', ParseIntPipe) userId: number) {
+    return this.service.idsForUser(userId);
+  }
+
+  /** POST /favorites/toggle { userId, productId } → { favorited: bool } */
+  @Post('toggle')
+  toggle(@Body() body: { userId: number; productId: number }) {
+    return this.service.toggle(Number(body.userId), Number(body.productId));
   }
 
   @Get(':id')

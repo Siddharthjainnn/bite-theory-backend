@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
 } from '@nestjs/common';
 import { ReviewService } from './reviews.service';
 import { CreateReviewDto } from './create-review.dto';
@@ -9,9 +9,16 @@ import { UpdateReviewDto } from './update-review.dto';
 export class ReviewController {
   constructor(private readonly service: ReviewService) {}
 
+  /** GET /reviews?userId=12 (my reviews) or /reviews?productId=5 (product reviews) */
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(
+    @Query('userId') userId?: string,
+    @Query('productId') productId?: string,
+  ) {
+    return this.service.findAll({
+      userId: userId ? Number(userId) : undefined,
+      productId: productId ? Number(productId) : undefined,
+    });
   }
 
   @Get(':id')

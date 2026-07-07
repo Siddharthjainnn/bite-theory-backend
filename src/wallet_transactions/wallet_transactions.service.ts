@@ -12,8 +12,28 @@ export class WalletTransactionService {
     private readonly repo: Repository<WalletTransaction>,
   ) {}
 
-  findAll() {
-    return this.repo.find({ order: { id: 'DESC' } });
+  /** List transactions, newest first. ?userId= scopes to one customer. */
+  findAll(userId?: number) {
+    return this.repo.find({
+      where: userId ? ({ userId } as any) : {},
+      order: { id: 'DESC' },
+      take: 200,
+    });
+  }
+
+  /** Wallet header numbers: live balance + lifetime credited/debited. */
+  async summary(userId: number) {
+    const [u] = await this.repo.query(
+      `SELECT wallet_balance AS balance FROM users WHERE id = $1`, [userId]);
+    const [agg] = await this.repo.query(
+      `SELECT COALESCE(SUM(CASE WHEN type = 'credit' THEN amount END), 0) AS credited,
+              COALESCE(SUM(CASE WHEN type = 'debit'  THEN amount END), 0) AS debited
+         FROM wallet_transactions WHERE user_id = $1`, [userId]);
+    return {
+      balance: Number(u?.balance || 0),
+      totalCredited: Number(agg?.credited || 0),
+      totalDebited: Number(agg?.debited || 0),
+    };
   }
 
   async findOne(id: number) {

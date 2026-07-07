@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
 } from '@nestjs/common';
 import { WalletTransactionService } from './wallet_transactions.service';
 import { CreateWalletTransactionDto } from './create-wallet-transaction.dto';
@@ -9,9 +9,16 @@ import { UpdateWalletTransactionDto } from './update-wallet-transaction.dto';
 export class WalletTransactionController {
   constructor(private readonly service: WalletTransactionService) {}
 
+  /** GET /wallet-transactions?userId=12 → that user's ledger, newest first */
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('userId') userId?: string) {
+    return this.service.findAll(userId ? Number(userId) : undefined);
+  }
+
+  /** GET /wallet-transactions/summary?userId=12 → { balance, totalCredited, totalDebited } */
+  @Get('summary')
+  summary(@Query('userId', ParseIntPipe) userId: number) {
+    return this.service.summary(userId);
   }
 
   @Get(':id')
