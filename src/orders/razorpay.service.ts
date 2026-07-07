@@ -52,6 +52,20 @@ export class RazorpayService {
   }
 
   /**
+   * Fetch a Razorpay order and return its amount in paise.
+   * Used at checkout to confirm the amount actually paid matches the
+   * server-priced cart total (signature alone doesn't prove the amount).
+   */
+  async fetchOrderAmountPaise(orderId: string): Promise<number> {
+    try {
+      const order = await this.instance.orders.fetch(orderId);
+      return Number(order.amount);
+    } catch {
+      throw new BadRequestException('Could not verify payment amount with Razorpay');
+    }
+  }
+
+  /**
    * Verify the signature Razorpay returns to the browser after payment.
    * signature === HMAC_SHA256(order_id + "|" + payment_id, key_secret)
    */

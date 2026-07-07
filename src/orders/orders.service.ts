@@ -195,6 +195,13 @@ export class OrdersService {
       if (!ok) throw new BadRequestException('Payment verification failed. You were not charged.');
     }
 
+    // Also confirm HOW MUCH was paid: the signature proves the payment is
+    // genuine, but not that it covers this cart. Fetch the Razorpay order
+    // amount so we can compare it against the server-priced payable below.
+    const paidAmountPaise = isOnline
+      ? await this.razorpay.fetchOrderAmountPaise(dto.razorpayOrderId || '')
+      : 0;
+
     return this.dataSource.transaction(async (mgr) => {
       /* 1) price items from DB — never trust client prices */
       const ids = dto.items.map((i) => i.productId);
@@ -243,6 +250,13 @@ export class OrdersService {
             `UPDATE users SET wallet_balance = wallet_balance - $1, updated_at = now() WHERE id = $2`,
             [walletUsed, dto.userId]);
         }
+      }
+
+      /* 4b) online payments: paid amount must match the priced total */
+      if (isOnline && Math.abs(Math.round(payable * 100) - paidAmountPaise) > 0) {
+        throw new BadRequestException(
+          'Paid amount does not match the order total. Please retry payment; contact support if you were charged.',
+        );
       }
 
       /* 5) resolve delivery destination */
