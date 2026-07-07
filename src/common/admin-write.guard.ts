@@ -25,6 +25,7 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/delivery-partners\/login$/ },
     { method: 'POST', path: /^\/orders$/ },                  // place order (create)
     { method: 'POST', path: /^\/orders\/checkout$/ },        // checkout flow
+    { method: 'POST', path: /^\/orders\/create-payment$/ },  // open razorpay order
     { method: 'POST', path: /^\/orders\/[^/]+\/accept$/ },   // rider accepts order
     { method: 'PATCH', path: /^\/orders\/[^/]+\/status$/ },  // rider updates status
     { method: 'PATCH', path: /^\/delivery-partners\/[^/]+\/location$/ },

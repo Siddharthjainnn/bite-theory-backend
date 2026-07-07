@@ -27,6 +27,21 @@ export class CheckoutDto {
   @IsOptional() @IsBoolean() useWallet?: boolean;
   @IsOptional() @IsIn(['cod', 'online']) paymentMethod?: string;
   @IsOptional() @IsString() deliverySlot?: string;
+
+  // Razorpay (only sent when paymentMethod === 'online', after the popup succeeds)
+  @IsOptional() @IsString() razorpayOrderId?: string;
+  @IsOptional() @IsString() razorpayPaymentId?: string;
+  @IsOptional() @IsString() razorpaySignature?: string;
+}
+
+/** Step 1 of online pay: price the cart and open a Razorpay order. */
+export class CreatePaymentDto {
+  @IsNumber() userId!: number;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => CheckoutItemDto)
+  items!: CheckoutItemDto[];
+  @IsOptional() @IsNumber() addressId?: number;
+  @IsOptional() @IsString() couponCode?: string;
+  @IsOptional() @IsBoolean() useWallet?: boolean;
 }
 
 /** Legacy admin create (kept for admin panel compatibility). */

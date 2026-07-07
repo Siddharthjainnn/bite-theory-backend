@@ -3,7 +3,7 @@ import {
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import {
-  CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto,
+  CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto,
 } from './dto';
 
 @Controller('orders')
@@ -36,6 +36,11 @@ export class OrdersController {
 
   /** Customer checkout — items priced server-side, atomic. */
   @Post('checkout') checkout(@Body() dto: CheckoutDto) { return this.service.checkout(dto); }
+
+  /** Online pay step 1: price cart + open a Razorpay order (nothing saved yet). */
+  @Post('create-payment') createPayment(@Body() dto: CreatePaymentDto) {
+    return this.service.createPaymentOrder(dto);
+  }
 
   /** Legacy admin create. */
   @Post() create(@Body() dto: CreateOrderDto) { return this.service.create(dto); }

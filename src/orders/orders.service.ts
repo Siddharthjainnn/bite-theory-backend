@@ -6,9 +6,10 @@ import { Repository, DataSource } from 'typeorm';
 import { Order } from './order.entity';
 import { OrderStatusHistory } from './order-status-history.entity';
 import {
-  CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto,
+  CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto,
 } from './dto';
 import { computeCouponDiscount } from '../coupons/coupon.util';
+import { RazorpayService } from './razorpay.service';
 
 const DELIVERY_CHARGE = 30;
 const FREE_DELIVERY_ABOVE = 500;
@@ -19,6 +20,7 @@ export class OrdersService {
     @InjectRepository(Order) private repo: Repository<Order>,
     @InjectRepository(OrderStatusHistory) private historyRepo: Repository<OrderStatusHistory>,
     @InjectDataSource() private dataSource: DataSource,
+    private readonly razorpay: RazorpayService,
   ) {}
 
   findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -88,12 +90,110 @@ export class OrdersService {
   }
 
   /**
+   * Step 1 of online payment. Prices the cart exactly like checkout would
+   * (server-side, coupon + wallet aware) and opens a Razorpay order for the
+   * remaining payable amount. Returns everything the browser popup needs.
+   * Nothing is written to our DB yet.
+   */
+  async createPaymentOrder(dto: CreatePaymentDto) {
+    if (!this.razorpay.isConfigured) {
+      throw new BadRequestException('Online payment is not available right now.');
+    }
+    if (!dto.items?.length) throw new BadRequestException('Cart is empty');
+
+    const priced = await this.priceCart({
+      userId: dto.userId,
+      items: dto.items,
+      couponCode: dto.couponCode,
+      useWallet: dto.useWallet,
+    });
+
+    if (priced.payable < 1) {
+      // wallet already covers it — no online payment needed
+      throw new BadRequestException('No online payment needed; wallet covers the order.');
+    }
+
+    const receipt = 'rcpt_' + Date.now().toString(36);
+    const rzp = await this.razorpay.createOrder(priced.payable, receipt);
+    return {
+      razorpayOrderId: rzp.id,
+      amount: rzp.amount,           // in paise
+      currency: rzp.currency,
+      keyId: process.env.RAZORPAY_KEY_ID,
+      payable: priced.payable,      // in rupees, for display
+      subtotal: priced.subtotal,
+      discount: priced.discount,
+      deliveryCharge: priced.deliveryCharge,
+      walletUsed: priced.walletUsed,
+    };
+  }
+
+  /**
+   * Shared pricing used by both the payment-order step and final checkout,
+   * so the amount charged always matches the order total. Read-only (no writes).
+   */
+  private async priceCart(input: {
+    userId: number; items: { productId: number; quantity: number }[];
+    couponCode?: string; useWallet?: boolean;
+  }) {
+    const ids = input.items.map((i) => i.productId);
+    const products = await this.dataSource.query(
+      `SELECT id, name, price, offer_price FROM products
+        WHERE id = ANY($1) AND status = 'active'`, [ids]);
+    const byId = new Map<number, any>(products.map((p: any) => [Number(p.id), p]));
+
+    let subtotal = 0;
+    for (const i of input.items) {
+      const p = byId.get(Number(i.productId));
+      if (!p) throw new BadRequestException(`Product ${i.productId} unavailable`);
+      const price = Number(p.offer_price) > 0 && Number(p.offer_price) < Number(p.price)
+        ? Number(p.offer_price) : Number(p.price);
+      subtotal += price * i.quantity;
+    }
+
+    let discount = 0;
+    if (input.couponCode) {
+      const rows = await this.dataSource.query(
+        `SELECT * FROM coupons WHERE UPPER(code) = UPPER($1) LIMIT 1`, [input.couponCode.trim()]);
+      const result = computeCouponDiscount(rows[0], subtotal);
+      if (!result.valid) throw new BadRequestException(result.message);
+      discount = result.discount;
+    }
+
+    const deliveryCharge = subtotal - discount >= FREE_DELIVERY_ABOVE ? 0 : DELIVERY_CHARGE;
+    let payable = subtotal - discount + deliveryCharge;
+
+    let walletUsed = 0;
+    if (input.useWallet) {
+      const u = await this.dataSource.query(
+        `SELECT wallet_balance FROM users WHERE id = $1`, [input.userId]);
+      const balance = Number(u[0]?.wallet_balance || 0);
+      walletUsed = Math.min(balance, payable);
+      payable -= walletUsed;
+    }
+
+    return { subtotal, discount, deliveryCharge, walletUsed, payable };
+  }
+
+  /**
    * Swiggy-style checkout — one atomic transaction:
    * price items from DB, apply coupon, deduct wallet, create
    * order + items + history + payment, bump coupon usage, award points.
    */
   async checkout(dto: CheckoutDto) {
     if (!dto.items?.length) throw new BadRequestException('Cart is empty');
+
+    // For online payments, verify the Razorpay signature BEFORE writing anything.
+    // If it doesn't check out, we never create the order — no unpaid ghost orders.
+    const isOnline = dto.paymentMethod === 'online';
+    if (isOnline) {
+      const ok = this.razorpay.verifySignature(
+        dto.razorpayOrderId || '',
+        dto.razorpayPaymentId || '',
+        dto.razorpaySignature || '',
+      );
+      if (!ok) throw new BadRequestException('Payment verification failed. You were not charged.');
+    }
 
     return this.dataSource.transaction(async (mgr) => {
       /* 1) price items from DB — never trust client prices */
@@ -206,9 +306,15 @@ export class OrdersService {
 
       /* 11) payment row */
       await mgr.query(
-        `INSERT INTO payments (order_id, method, amount, status)
-         VALUES ($1,$2,$3,$4)`,
-        [orderId, dto.paymentMethod || 'cod', total, dto.paymentMethod === 'online' ? 'pending' : 'pending']);
+        `INSERT INTO payments (order_id, method, amount, status, transaction_id)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [
+          orderId,
+          dto.paymentMethod || 'cod',
+          total,
+          isOnline ? 'paid' : 'pending',        // COD stays pending until delivered
+          isOnline ? (dto.razorpayPaymentId || null) : null,
+        ]);
 
       /* 12) loyalty: 1 point per ₹100 of subtotal, then auto-upgrade tier */
       const points = Math.floor(subtotal / 100);
