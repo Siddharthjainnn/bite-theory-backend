@@ -21,11 +21,38 @@ export class OrdersService {
     @InjectDataSource() private dataSource: DataSource,
   ) {}
 
-  findAll(userId?: number) {
-    return this.repo.find({
-      where: userId ? { userId } : {},
-      order: { placedAt: 'DESC' },
-    });
+  findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
+    const qb = this.repo.createQueryBuilder('o').orderBy('o.placed_at', 'DESC');
+    if (filters.userId) qb.andWhere('o.user_id = :uid', { uid: filters.userId });
+    if (filters.deliveryPartnerId) qb.andWhere('o.delivery_partner_id = :pid', { pid: filters.deliveryPartnerId });
+    if (filters.active) qb.andWhere(`o.status NOT IN ('delivered','cancelled')`);
+    return qb.getMany();
+  }
+
+  /** Orders ready for a rider to accept: food is (nearly) ready, no partner yet. */
+  availableForRiders() {
+    return this.repo.createQueryBuilder('o')
+      .where('o.delivery_partner_id IS NULL')
+      .andWhere(`o.status IN ('preparing_food','food_ready')`)
+      .orderBy('o.placed_at', 'ASC')
+      .getMany();
+  }
+
+  /** Rider accepts an order — atomic claim so two riders can't take the same one. */
+  async acceptOrder(orderId: number, partnerId: number) {
+    const res = await this.dataSource.query(
+      `UPDATE orders SET delivery_partner_id = $1, status = 'assigned_to_delivery', updated_at = now()
+        WHERE id = $2 AND delivery_partner_id IS NULL
+          AND status IN ('preparing_food','food_ready')
+        RETURNING id`, [partnerId, orderId]);
+    if (!res[0]?.length && !res.length) throw new BadRequestException('Order already taken by another rider');
+    // pg driver returns [rows, count] via dataSource.query for UPDATE..RETURNING in some versions; normalize:
+    const rows = Array.isArray(res[0]) ? res[0] : res;
+    if (!rows.length) throw new BadRequestException('Order already taken by another rider');
+    await this.historyRepo.save(this.historyRepo.create({ orderId, status: 'assigned_to_delivery', note: `Accepted by rider #${partnerId}` }));
+    await this.dataSource.query(
+      `UPDATE delivery_partners SET is_available = false WHERE id = $1`, [partnerId]);
+    return this.findOneFull(orderId);
   }
 
   async findOne(id: number) {
@@ -220,7 +247,13 @@ export class OrdersService {
     const now = new Date();
     if (dto.status === 'order_confirmed' && !order.acceptedAt) order.acceptedAt = now;
     if (dto.status === 'out_for_delivery' && !order.pickedUpAt) order.pickedUpAt = now;
-    if (dto.status === 'delivered') order.deliveredAt = now;
+    if (dto.status === 'delivered') {
+      order.deliveredAt = now;
+      if (order.deliveryPartnerId) {
+        await this.dataSource.query(
+          `UPDATE delivery_partners SET is_available = true WHERE id = $1`, [order.deliveryPartnerId]);
+      }
+    }
     if (dto.status === 'cancelled') order.cancelledAt = now;
     const saved = await this.repo.save(order);
     await this.historyRepo.save(this.historyRepo.create({ orderId: id, status: dto.status, note: dto.note }));

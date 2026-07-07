@@ -14,6 +14,12 @@ export class DeliveryPartnerController {
     return this.service.findAll();
   }
 
+  /** Rider portal login: mobile number lookup. */
+  @Post('login')
+  login(@Body() body: { mobile: string }) {
+    return this.service.findByMobile((body.mobile || '').trim());
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.service.findOne(id);

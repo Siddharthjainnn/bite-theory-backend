@@ -1,7 +1,6 @@
 import {
   IsString, IsNotEmpty, IsNumber, IsOptional,
-  IsIn, Min, IsUrl, ValidateIf,
-} from 'class-validator';
+  IsIn, Min, IsUrl, ValidateIf, IsBoolean } from 'class-validator';
 
 export class CreateProductDto {
   @IsString() @IsNotEmpty()
@@ -39,4 +38,8 @@ export class CreateProductDto {
 
   @IsOptional() @IsIn(['active', 'inactive'])
   status?: string;
+
+  @IsOptional() @IsBoolean() isTodaysSpecial?: boolean;
+  @IsOptional() @IsBoolean() isVeg?: boolean;
+  @IsOptional() @IsString() specialTag?: string;
 }

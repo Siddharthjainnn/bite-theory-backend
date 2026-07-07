@@ -56,4 +56,13 @@ export class Product {
 
   @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
+
+  @Column({ type: 'boolean', name: 'is_todays_special', default: false, nullable: true })
+  isTodaysSpecial: boolean;
+
+  @Column({ type: 'boolean', name: 'is_veg', default: true, nullable: true })
+  isVeg: boolean;
+
+  @Column({ type: 'varchar', name: 'special_tag', length: 50, nullable: true })
+  specialTag: string;
 }

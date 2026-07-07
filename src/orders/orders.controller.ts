@@ -10,8 +10,25 @@ import {
 export class OrdersController {
   constructor(private readonly service: OrdersService) {}
 
-  @Get() findAll(@Query('userId') userId?: string) {
-    return this.service.findAll(userId ? Number(userId) : undefined);
+  @Get() findAll(
+    @Query('userId') userId?: string,
+    @Query('deliveryPartnerId') deliveryPartnerId?: string,
+    @Query('active') active?: string,
+  ) {
+    return this.service.findAll({
+      userId: userId ? Number(userId) : undefined,
+      deliveryPartnerId: deliveryPartnerId ? Number(deliveryPartnerId) : undefined,
+      active: active === 'true' || active === '1',
+    });
+  }
+
+  /** Rider feed: unclaimed orders ready for pickup. */
+  @Get('available-for-riders') availableForRiders() { return this.service.availableForRiders(); }
+
+  /** Rider claims an order (first-come-first-served, atomic). */
+  @Post(':id/accept')
+  accept(@Param('id', ParseIntPipe) id: number, @Body() body: { partnerId: number }) {
+    return this.service.acceptOrder(id, Number(body.partnerId));
   }
   @Get(':id') findOne(@Param('id', ParseIntPipe) id: number) { return this.service.findOneFull(id); }
   @Get(':id/history') getHistory(@Param('id', ParseIntPipe) id: number) { return this.service.getHistory(id); }

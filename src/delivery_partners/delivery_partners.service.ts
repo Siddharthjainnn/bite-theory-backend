@@ -44,4 +44,12 @@ export class DeliveryPartnerService {
     Object.assign(item, { currentLat: lat, currentLng: lng, locationUpdatedAt: new Date() });
     return this.repo.save(item);
   }
+
+  async findByMobile(mobile: string) {
+    const item = await this.repo.findOne({ where: { mobile } as any });
+    if (!item || item.isActive === false) {
+      throw new NotFoundException('No active rider found with this mobile number');
+    }
+    return item;
+  }
 }
