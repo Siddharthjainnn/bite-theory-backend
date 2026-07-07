@@ -1,25 +1,56 @@
 import {
   Controller, Post, Param, UploadedFile, UseInterceptors, BadRequestException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { memoryStorage, diskStorage } from 'multer';
 import { extname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { v2 as cloudinary } from 'cloudinary';
+import * as streamifier from 'streamifier';
 
-// folders we allow uploading into (keeps things organized & safe)
-const ALLOWED_FOLDERS = ['products', 'categories', 'banners', 'users', 'reviews', 'delivery_partners', 'admin_users', 'support_tickets', 'misc'];
+/**
+ * Upload strategy:
+ * - CLOUDINARY_* env vars set  → stream to Cloudinary (persistent, CDN).
+ *   REQUIRED in production: Render's disk is ephemeral — local files die on redeploy.
+ * - Not set (local dev)        → fall back to disk exactly as before.
+ */
+const ALLOWED_FOLDERS = ['products', 'categories', 'banners', 'users', 'reviews',
+  'delivery_partners', 'admin_users', 'support_tickets', 'misc'];
 
-// where files are saved on the server.
-// __dirname at runtime = dist/upload, so go up to project root then into public/uploads
 const UPLOAD_ROOT = join(process.cwd(), 'public', 'uploads');
-
-// public base URL the browser will use to load the file
 const PUBLIC_BASE = process.env.PUBLIC_UPLOAD_BASE || 'https://bitestheory.com/api/uploads';
+
+const CLOUD_ENABLED = !!(process.env.CLOUDINARY_CLOUD_NAME
+  && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET);
+
+if (CLOUD_ENABLED) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+    secure: true,
+  });
+}
 
 function safeName(original: string): string {
   const ext = extname(original).toLowerCase();
-  const rand = Date.now() + '-' + Math.round(Math.random() * 1e9);
-  return `${rand}${ext}`;
+  return `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+}
+
+function uploadToCloudinary(buffer: Buffer, folder: string, isVideo: boolean): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: `bite-theory/${folder}`,
+        resource_type: isVideo ? 'video' : 'image',
+        // auto-optimize images on delivery (quality + format)
+        ...(isVideo ? {} : { transformation: [{ quality: 'auto', fetch_format: 'auto' }] }),
+      },
+      (err, result) => (err ? reject(err) : resolve(result)),
+    );
+    streamifier.createReadStream(buffer).pipe(stream);
+  });
 }
 
 @Controller('upload')
@@ -27,16 +58,8 @@ export class UploadController {
   @Post(':folder')
   @UseInterceptors(
     FileInterceptor('file', {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const folder = (req.params as any).folder;
-          const dir = join(UPLOAD_ROOT, ALLOWED_FOLDERS.includes(folder) ? folder : 'misc');
-          if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-          cb(null, dir);
-        },
-        filename: (req, file, cb) => cb(null, safeName(file.originalname)),
-      }),
-      limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max (covers short videos)
+      storage: memoryStorage(), // buffer in memory; we decide destination below
+      limits: { fileSize: 50 * 1024 * 1024 },
       fileFilter: (req, file, cb) => {
         const ok = /^(image\/(jpe?g|png|webp|gif|avif)|video\/(mp4|webm|quicktime))$/.test(file.mimetype);
         if (!ok) return cb(new BadRequestException('Only image or video files are allowed'), false);
@@ -44,15 +67,38 @@ export class UploadController {
       },
     }),
   )
-  uploadFile(@Param('folder') folder: string, @UploadedFile() file: Express.Multer.File) {
+  async uploadFile(@Param('folder') folder: string, @UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException('No file received');
     const safeFolder = ALLOWED_FOLDERS.includes(folder) ? folder : 'misc';
-    const url = `${PUBLIC_BASE}/${safeFolder}/${file.filename}`;
+    const isVideo = file.mimetype.startsWith('video');
+
+    /* ── production path: Cloudinary ── */
+    if (CLOUD_ENABLED) {
+      try {
+        const res = await uploadToCloudinary(file.buffer, safeFolder, isVideo);
+        return {
+          url: res.secure_url,
+          filename: res.public_id,
+          type: isVideo ? 'video' : 'image',
+          size: file.size,
+          storage: 'cloudinary',
+        };
+      } catch (e: any) {
+        throw new InternalServerErrorException(`Cloudinary upload failed: ${e?.message || e}`);
+      }
+    }
+
+    /* ── local-dev fallback: disk (unchanged behaviour) ── */
+    const dir = join(UPLOAD_ROOT, safeFolder);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const filename = safeName(file.originalname);
+    writeFileSync(join(dir, filename), file.buffer);
     return {
-      url,
-      filename: file.filename,
-      type: file.mimetype.startsWith('video') ? 'video' : 'image',
+      url: `${PUBLIC_BASE}/${safeFolder}/${filename}`,
+      filename,
+      type: isVideo ? 'video' : 'image',
       size: file.size,
+      storage: 'disk',
     };
   }
 }
