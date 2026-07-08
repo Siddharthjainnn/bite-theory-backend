@@ -10,6 +10,7 @@ import {
 } from './dto';
 import { computeCouponDiscount } from '../coupons/coupon.util';
 import { RazorpayService } from './razorpay.service';
+import { MailService } from '../common/mail.service';
 
 const DELIVERY_CHARGE = 30;
 const FREE_DELIVERY_ABOVE = 500;
@@ -21,6 +22,7 @@ export class OrdersService {
     @InjectRepository(OrderStatusHistory) private historyRepo: Repository<OrderStatusHistory>,
     @InjectDataSource() private dataSource: DataSource,
     private readonly razorpay: RazorpayService,
+    private readonly mail: MailService,
   ) {}
 
   findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -106,6 +108,7 @@ export class OrdersService {
       items: dto.items,
       couponCode: dto.couponCode,
       useWallet: dto.useWallet,
+      tipAmount: dto.tipAmount,
     });
 
     if (priced.payable < 1) {
@@ -115,6 +118,15 @@ export class OrdersService {
 
     const receipt = 'rcpt_' + Date.now().toString(36);
     const rzp = await this.razorpay.createOrder(priced.payable, receipt);
+
+    // Snapshot the cart against this Razorpay order so the webhook can
+    // finish checkout even if the customer's browser dies right after paying.
+    await this.dataSource.query(
+      `INSERT INTO pending_payments (razorpay_order_id, user_id, payload)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (razorpay_order_id) DO UPDATE SET payload = EXCLUDED.payload`,
+      [rzp.id, dto.userId, JSON.stringify(dto)]);
+
     return {
       razorpayOrderId: rzp.id,
       amount: rzp.amount,           // in paise
@@ -134,7 +146,7 @@ export class OrdersService {
    */
   private async priceCart(input: {
     userId: number; items: { productId: number; quantity: number }[];
-    couponCode?: string; useWallet?: boolean;
+    couponCode?: string; useWallet?: boolean; tipAmount?: number;
   }) {
     const ids = input.items.map((i) => i.productId);
     const products = await this.dataSource.query(
@@ -161,7 +173,8 @@ export class OrdersService {
     }
 
     const deliveryCharge = subtotal - discount >= FREE_DELIVERY_ABOVE ? 0 : DELIVERY_CHARGE;
-    let payable = subtotal - discount + deliveryCharge;
+    const tip = Math.max(0, Math.min(Number(input.tipAmount) || 0, 500)); // cap ₹500
+    let payable = subtotal - discount + deliveryCharge + tip;
 
     let walletUsed = 0;
     if (input.useWallet) {
@@ -172,7 +185,7 @@ export class OrdersService {
       payable -= walletUsed;
     }
 
-    return { subtotal, discount, deliveryCharge, walletUsed, payable };
+    return { subtotal, discount, deliveryCharge, tip, walletUsed, payable };
   }
 
   /**
@@ -180,13 +193,15 @@ export class OrdersService {
    * price items from DB, apply coupon, deduct wallet, create
    * order + items + history + payment, bump coupon usage, award points.
    */
-  async checkout(dto: CheckoutDto) {
+  async checkout(dto: CheckoutDto, opts: { skipSignatureCheck?: boolean } = {}) {
     if (!dto.items?.length) throw new BadRequestException('Cart is empty');
 
     // For online payments, verify the Razorpay signature BEFORE writing anything.
     // If it doesn't check out, we never create the order — no unpaid ghost orders.
+    // (The webhook path skips this: its authenticity is proven by the webhook
+    //  signature verified in the controller instead.)
     const isOnline = dto.paymentMethod === 'online';
-    if (isOnline) {
+    if (isOnline && !opts.skipSignatureCheck) {
       const ok = this.razorpay.verifySignature(
         dto.razorpayOrderId || '',
         dto.razorpayPaymentId || '',
@@ -203,6 +218,16 @@ export class OrdersService {
       : 0;
 
     return this.dataSource.transaction(async (mgr) => {
+      /* 0) idempotency — if this payment already produced an order (browser
+         handler AND webhook can both land here), return the existing order
+         instead of double-charging inventory/wallet/coupons. */
+      if (isOnline && dto.razorpayPaymentId) {
+        const dupe = await mgr.query(
+          `SELECT order_id FROM payments WHERE transaction_id = $1 LIMIT 1`,
+          [dto.razorpayPaymentId]);
+        if (dupe.length) return this.findOneFull(Number(dupe[0].order_id));
+      }
+
       /* 1) price items from DB — never trust client prices */
       const ids = dto.items.map((i) => i.productId);
       const products = await mgr.query(
@@ -232,9 +257,10 @@ export class OrdersService {
         couponId = Number(rows[0].id);
       }
 
-      /* 3) delivery charge */
+      /* 3) delivery charge + rider tip */
       const deliveryCharge = subtotal - discount >= FREE_DELIVERY_ABOVE ? 0 : DELIVERY_CHARGE;
-      let payable = subtotal - discount + deliveryCharge;
+      const tip = Math.max(0, Math.min(Number(dto.tipAmount) || 0, 500));
+      let payable = subtotal - discount + deliveryCharge + tip;
 
       /* 4) wallet (lock the user row) */
       let walletUsed = 0;
@@ -283,12 +309,14 @@ export class OrdersService {
       const [order] = await mgr.query(
         `INSERT INTO orders (order_number, user_id, address_id, coupon_id, subtotal, discount,
              delivery_charge, tax, wallet_used, total, status, delivery_slot,
-             delivery_lat, delivery_lng, delivery_address, eta_minutes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14)
+             delivery_lat, delivery_lng, delivery_address, eta_minutes,
+             tip, delivery_instructions, cooking_note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17)
          RETURNING *, order_number AS "orderNumber", user_id AS "userId", placed_at AS "placedAt"`,
         [orderNumber, dto.userId, dto.addressId ?? null, couponId, subtotal, discount,
          deliveryCharge, walletUsed, total, dto.deliverySlot ?? null,
-         deliveryLat, deliveryLng, deliveryAddress, 35]);
+         deliveryLat, deliveryLng, deliveryAddress, 35,
+         tip, dto.deliveryInstructions?.trim() || null, dto.cookingNote?.trim() || null]);
       const orderId = Number(order.id);
 
       /* 7) items */
@@ -409,8 +437,140 @@ export class OrdersService {
            WHERE id = $1`, [dto.userId]);
       }
 
+      /* 16) online: mark the pending-payment snapshot consumed */
+      if (isOnline && dto.razorpayOrderId) {
+        await mgr.query(
+          `UPDATE pending_payments SET status = 'consumed', consumed_at = now()
+            WHERE razorpay_order_id = $1`, [dto.razorpayOrderId]);
+      }
+
+      /* 17) confirmation email (fire-and-forget, optional) */
+      const u = await mgr.query(`SELECT email FROM users WHERE id = $1`, [dto.userId]);
+      this.mail.send(
+        u[0]?.email,
+        `Order ${orderNumber} confirmed — Bite Theory`,
+        this.mail.orderPlacedHtml({ orderNumber, total, items: lines, deliveryAddress }),
+      );
+
       return { ...order, id: orderId, items: lines, pointsEarned: points };
     });
+  }
+
+  /**
+   * Razorpay webhook (payment.captured). The controller has already verified
+   * the webhook signature against the raw body. This is the safety net for
+   * "money captured but browser died before checkout" — if no order exists
+   * for this payment yet, we create it from the pending snapshot.
+   * Always resolves (webhook must get a 200 or Razorpay retries forever).
+   */
+  async handleRazorpayWebhook(event: any) {
+    try {
+      if (event?.event !== 'payment.captured') return { ok: true, ignored: event?.event };
+      const payment = event?.payload?.payment?.entity;
+      const paymentId: string = payment?.id;
+      const rzpOrderId: string = payment?.order_id;
+      if (!paymentId || !rzpOrderId) return { ok: true, ignored: 'no payment entity' };
+
+      // Order already created by the browser flow? Then we're done.
+      const existing = await this.dataSource.query(
+        `SELECT order_id FROM payments WHERE transaction_id = $1 LIMIT 1`, [paymentId]);
+      if (existing.length) return { ok: true, orderId: Number(existing[0].order_id) };
+
+      // Recover the cart snapshot saved at create-payment time.
+      const rows = await this.dataSource.query(
+        `SELECT payload FROM pending_payments
+          WHERE razorpay_order_id = $1 AND status = 'pending' LIMIT 1`, [rzpOrderId]);
+      if (!rows.length) return { ok: true, ignored: 'no pending snapshot' };
+
+      const snap = typeof rows[0].payload === 'string'
+        ? JSON.parse(rows[0].payload) : rows[0].payload;
+
+      const order = await this.checkout(
+        {
+          ...snap,
+          paymentMethod: 'online',
+          razorpayOrderId: rzpOrderId,
+          razorpayPaymentId: paymentId,
+        } as CheckoutDto,
+        { skipSignatureCheck: true },
+      );
+      return { ok: true, orderId: (order as any).id, recovered: true };
+    } catch (e: any) {
+      // Log, but never 500 a webhook — Razorpay retries and we stay idempotent.
+      console.error('[razorpay-webhook]', e?.message || e);
+      return { ok: true, error: e?.message };
+    }
+  }
+
+  /**
+   * Customer cancels their own order. Allowed only before the kitchen has
+   * started cooking. Ownership is enforced (userId must match), and the
+   * cancel path triggers the same refund logic as an admin cancel.
+   */
+  async cancelByCustomer(orderId: number, userId: number) {
+    const order = await this.findOne(orderId);
+    if (Number(order.userId) !== Number(userId)) {
+      throw new BadRequestException('This order does not belong to you.');
+    }
+    const cancellable = ['order_received', 'order_confirmed'];
+    if (!cancellable.includes(order.status)) {
+      throw new BadRequestException(
+        'This order is already being prepared and can no longer be cancelled. Please contact support.',
+      );
+    }
+    return this.updateStatus(orderId, { status: 'cancelled', note: 'Cancelled by customer' });
+  }
+
+  /**
+   * Money back on cancellation:
+   *  - online paid amount → real Razorpay refund (payments.status → 'refunded')
+   *  - wallet portion     → credited back to the wallet
+   * Idempotent: checks current payment status / existing wallet credit first.
+   */
+  private async refundOnCancel(orderId: number) {
+    const order = await this.findOne(orderId);
+
+    // 1) online refund via Razorpay
+    const pay = await this.dataSource.query(
+      `SELECT id, amount, transaction_id FROM payments
+        WHERE order_id = $1 AND method = 'online' AND status = 'paid'
+          AND transaction_id IS NOT NULL LIMIT 1`, [orderId]);
+    if (pay.length) {
+      try {
+        const refund = await this.razorpay.refundPayment(pay[0].transaction_id, Number(pay[0].amount));
+        await this.dataSource.query(
+          `UPDATE payments SET status = 'refunded' WHERE id = $1`, [pay[0].id]);
+        await this.dataSource.query(
+          `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+           VALUES ($1,$2,'in_app','💸 Refund initiated',$3,true)`,
+          [order.userId, orderId,
+           `₹${pay[0].amount} refund started (ref ${refund?.id || ''}). It usually reaches your account in 5–7 working days.`]);
+      } catch (e: any) {
+        // Don't block the cancellation; flag for manual follow-up instead.
+        console.error(`[refund] order ${orderId} failed:`, e?.message || e);
+        await this.dataSource.query(
+          `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+           VALUES ($1,$2,'in_app','⚠️ Refund pending','We hit a snag starting your refund automatically — our team will process it manually.',true)`,
+          [order.userId, orderId]);
+      }
+    }
+
+    // 2) wallet portion back to wallet (guard against double-credit)
+    const walletUsed = Number(order.walletUsed || 0);
+    if (walletUsed > 0) {
+      const already = await this.dataSource.query(
+        `SELECT 1 FROM wallet_transactions
+          WHERE order_id = $1 AND type = 'credit' AND reason LIKE 'Refund%' LIMIT 1`, [orderId]);
+      if (!already.length) {
+        await this.dataSource.query(
+          `UPDATE users SET wallet_balance = COALESCE(wallet_balance,0) + $1, updated_at = now()
+            WHERE id = $2`, [walletUsed, order.userId]);
+        await this.dataSource.query(
+          `INSERT INTO wallet_transactions (user_id, type, amount, reason, order_id)
+           VALUES ($1,'credit',$2,$3,$4)`,
+          [order.userId, walletUsed, `Refund for cancelled order ${order.orderNumber}`, orderId]);
+      }
+    }
   }
 
   /* ── legacy admin create ── */
@@ -443,6 +603,11 @@ export class OrdersService {
     }
     if (dto.status === 'cancelled') order.cancelledAt = now;
     const saved = await this.repo.save(order);
+
+    /* cancelled → give the money back (online refund + wallet credit) */
+    if (dto.status === 'cancelled') {
+      await this.refundOnCancel(id);
+    }
     await this.historyRepo.save(this.historyRepo.create({ orderId: id, status: dto.status, note: dto.note }));
 
     /* COD: collected on the doorstep → mark the payment row paid */
@@ -468,6 +633,17 @@ export class OrdersService {
         `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
          VALUES ($1,$2,'in_app',$3,$4,true)`,
         [saved.userId, id, m.title, `Order ${saved.orderNumber || '#' + id}: ${m.body}`]);
+
+      /* email on the big moments (optional, no-op if SMTP unset) */
+      if (dto.status === 'delivered' || dto.status === 'cancelled') {
+        const u = await this.dataSource.query(
+          `SELECT email FROM users WHERE id = $1`, [saved.userId]);
+        this.mail.send(
+          u[0]?.email,
+          `${m.title} — Bite Theory`,
+          this.mail.statusHtml(saved.orderNumber || `#${id}`, m.title, m.body),
+        );
+      }
     }
     return saved;
   }

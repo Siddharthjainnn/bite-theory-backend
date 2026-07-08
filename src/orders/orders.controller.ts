@@ -1,14 +1,52 @@
 import {
   Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
+  Req, Headers, UseGuards, UnauthorizedException, RawBodyRequest,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { OrdersService } from './orders.service';
+import { RazorpayService } from './razorpay.service';
+import { UserAuthGuard } from '../common/user-auth.guard';
 import {
-  CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto,
+  CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
 } from './dto';
 
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly service: OrdersService) {}
+  constructor(
+    private readonly service: OrdersService,
+    private readonly razorpay: RazorpayService,
+  ) {}
+
+  /**
+   * Razorpay → server webhook (register payment.captured in the dashboard).
+   * Authenticity is the webhook signature over the RAW body — no user auth.
+   */
+  @Post('razorpay-webhook')
+  razorpayWebhook(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('x-razorpay-signature') signature: string,
+  ) {
+    const raw = req.rawBody;
+    if (!raw || !this.razorpay.verifyWebhookSignature(raw, signature || '')) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+    return this.service.handleRazorpayWebhook(JSON.parse(raw.toString('utf8')));
+  }
+
+  /** Customer cancels their own order (only before cooking starts). */
+  @UseGuards(UserAuthGuard)
+  @Post(':id/cancel')
+  cancel(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelOrderDto,
+    @Req() req: Request & { authUserId?: number },
+  ) {
+    // When USER_TOKEN_SECRET is set, the token's uid must match the body.
+    if (req.authUserId && Number(req.authUserId) !== Number(dto.userId)) {
+      throw new UnauthorizedException('Token does not match this user.');
+    }
+    return this.service.cancelByCustomer(id, Number(dto.userId));
+  }
 
   @Get() findAll(
     @Query('userId') userId?: string,
@@ -35,10 +73,22 @@ export class OrdersController {
   @Get(':id/track') track(@Param('id', ParseIntPipe) id: number) { return this.service.track(id); }
 
   /** Customer checkout — items priced server-side, atomic. */
-  @Post('checkout') checkout(@Body() dto: CheckoutDto) { return this.service.checkout(dto); }
+  @UseGuards(UserAuthGuard)
+  @Post('checkout')
+  checkout(@Body() dto: CheckoutDto, @Req() req: Request & { authUserId?: number }) {
+    if (req.authUserId && Number(req.authUserId) !== Number(dto.userId)) {
+      throw new UnauthorizedException('Token does not match this user.');
+    }
+    return this.service.checkout(dto);
+  }
 
   /** Online pay step 1: price cart + open a Razorpay order (nothing saved yet). */
-  @Post('create-payment') createPayment(@Body() dto: CreatePaymentDto) {
+  @UseGuards(UserAuthGuard)
+  @Post('create-payment')
+  createPayment(@Body() dto: CreatePaymentDto, @Req() req: Request & { authUserId?: number }) {
+    if (req.authUserId && Number(req.authUserId) !== Number(dto.userId)) {
+      throw new UnauthorizedException('Token does not match this user.');
+    }
     return this.service.createPaymentOrder(dto);
   }
 

@@ -1,6 +1,6 @@
 import {
   IsString, IsNotEmpty, IsNumber, IsOptional, IsIn, IsArray,
-  ValidateNested, Min, IsBoolean,
+  ValidateNested, Min, Max, IsBoolean, MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -28,6 +28,11 @@ export class CheckoutDto {
   @IsOptional() @IsIn(['cod', 'online']) paymentMethod?: string;
   @IsOptional() @IsString() deliverySlot?: string;
 
+  // UX extras
+  @IsOptional() @IsNumber() @Min(0) @Max(500) tipAmount?: number;
+  @IsOptional() @IsString() @MaxLength(300) deliveryInstructions?: string;
+  @IsOptional() @IsString() @MaxLength(300) cookingNote?: string;
+
   // Razorpay (only sent when paymentMethod === 'online', after the popup succeeds)
   @IsOptional() @IsString() razorpayOrderId?: string;
   @IsOptional() @IsString() razorpayPaymentId?: string;
@@ -42,6 +47,19 @@ export class CreatePaymentDto {
   @IsOptional() @IsNumber() addressId?: number;
   @IsOptional() @IsString() couponCode?: string;
   @IsOptional() @IsBoolean() useWallet?: boolean;
+
+  // Full destination + extras are snapshotted so the webhook can finish
+  // checkout even if the browser dies right after payment.
+  @IsOptional() @IsString() deliveryAddress?: string;
+  @IsOptional() @IsNumber() deliveryLat?: number;
+  @IsOptional() @IsNumber() deliveryLng?: number;
+  @IsOptional() @IsNumber() @Min(0) @Max(500) tipAmount?: number;
+  @IsOptional() @IsString() @MaxLength(300) deliveryInstructions?: string;
+  @IsOptional() @IsString() @MaxLength(300) cookingNote?: string;
+}
+
+export class CancelOrderDto {
+  @IsNumber() userId!: number;
 }
 
 /** Legacy admin create (kept for admin panel compatibility). */

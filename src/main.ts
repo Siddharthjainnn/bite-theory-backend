@@ -4,7 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true }); // rawBody needed for Razorpay webhook signature
   app.setGlobalPrefix('api');
   // Lock CORS to known frontends via env (comma-separated).
   // Falls back to allow-all if CORS_ORIGINS is not set (dev convenience).
@@ -26,7 +26,7 @@ bootstrap();
 // import { AppModule } from './app.module';
 
 // async function bootstrap() {
-//   const app = await NestFactory.create(AppModule);
+//   const app = await NestFactory.create(AppModule, { rawBody: true }); // rawBody needed for Razorpay webhook signature
 
 //   app.enableCors();   // ← THIS LINE is what's missing
 

@@ -12,6 +12,7 @@ const Razorpay = require('razorpay');
 export class RazorpayService {
   private readonly keyId = process.env.RAZORPAY_KEY_ID || '';
   private readonly keySecret = process.env.RAZORPAY_KEY_SECRET || '';
+  private readonly webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
   private client: any;
 
   private get instance() {
@@ -80,6 +81,42 @@ export class RazorpayService {
       return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Verify a webhook payload signature.
+   * signature === HMAC_SHA256(raw_request_body, webhook_secret)
+   * The webhook secret is the one YOU type when creating the webhook in the
+   * Razorpay dashboard — it is NOT the key secret.
+   */
+  verifyWebhookSignature(rawBody: Buffer | string, signature: string): boolean {
+    if (!this.webhookSecret || !signature || !rawBody) return false;
+    const expected = crypto
+      .createHmac('sha256', this.webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Refund a captured payment (full refund by default).
+   * amountRupees, if given, does a partial refund.
+   * Returns the Razorpay refund object ({ id, status, ... }).
+   */
+  async refundPayment(paymentId: string, amountRupees?: number) {
+    try {
+      const opts: any = { speed: 'normal' };
+      if (amountRupees && amountRupees > 0) opts.amount = Math.round(amountRupees * 100);
+      return await this.instance.payments.refund(paymentId, opts);
+    } catch (e: any) {
+      throw new InternalServerErrorException(
+        e?.error?.description || 'Refund request to Razorpay failed',
+      );
     }
   }
 }

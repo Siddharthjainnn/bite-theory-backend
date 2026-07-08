@@ -28,4 +28,9 @@ export class Order {
   @Column({ name: 'delivered_at', type: 'timestamptz', nullable: true }) deliveredAt!: Date;
   @Column({ name: 'cancelled_at', type: 'timestamptz', nullable: true }) cancelledAt!: Date;
   @Column({ name: 'eta_minutes', type: 'integer', nullable: true }) etaMinutes!: number;
+
+  /* UX extras */
+  @Column({ type: 'numeric', default: 0, nullable: true }) tip!: number;
+  @Column({ name: 'delivery_instructions', type: 'text', nullable: true }) deliveryInstructions!: string;
+  @Column({ name: 'cooking_note', type: 'text', nullable: true }) cookingNote!: string;
 }
