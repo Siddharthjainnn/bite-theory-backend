@@ -47,4 +47,6 @@ export class UpdateSettingsDto {
   @IsOptional() @IsNumber() @Min(0) baseDeliveryCharge?: number;
   @IsOptional() @IsNumber() @Min(0) perKmCharge?: number;
   @IsOptional() @IsNumber() @Min(0) freeDeliveryWithinKm?: number;
+  @IsOptional() @IsNumber() @Min(0) riderBaseFare?: number;
+  @IsOptional() @IsNumber() @Min(0) riderPerKmPay?: number;
 }

@@ -45,6 +45,8 @@ export class SettingsService {
     s.baseDeliveryCharge = Number(s.baseDeliveryCharge ?? 20);
     s.perKmCharge = Number(s.perKmCharge ?? 8);
     s.freeDeliveryWithinKm = Number(s.freeDeliveryWithinKm ?? 2);
+    s.riderBaseFare = Number(s.riderBaseFare ?? 20);
+    s.riderPerKmPay = Number(s.riderPerKmPay ?? 5);
     return s;
   }
 

@@ -25,21 +25,26 @@ export class OrdersService {
     private readonly settings: SettingsService,
   ) {}
 
-  findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
+  async findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
     const qb = this.repo.createQueryBuilder('o').orderBy('o.placed_at', 'DESC');
     if (filters.userId) qb.andWhere('o.user_id = :uid', { uid: filters.userId });
     if (filters.deliveryPartnerId) qb.andWhere('o.delivery_partner_id = :pid', { pid: filters.deliveryPartnerId });
     if (filters.active) qb.andWhere(`o.status NOT IN ('delivered','cancelled')`);
-    return qb.getMany();
+    const rows = await qb.getMany();
+    /* riders must never see the handoff OTP — only the customer gets it (§4.5) */
+    if (filters.deliveryPartnerId) rows.forEach((r) => { (r as any).deliveryOtp = null; });
+    return rows;
   }
 
   /** Orders ready for a rider to accept: food is (nearly) ready, no partner yet. */
-  availableForRiders() {
-    return this.repo.createQueryBuilder('o')
+  async availableForRiders() {
+    const rows = await this.repo.createQueryBuilder('o')
       .where('o.delivery_partner_id IS NULL')
       .andWhere(`o.status IN ('preparing_food','food_ready')`)
       .orderBy('o.placed_at', 'ASC')
       .getMany();
+    rows.forEach((r) => { (r as any).deliveryOtp = null; });
+    return rows;
   }
 
   /** Rider accepts an order — atomic claim so two riders can't take the same one. */
@@ -760,18 +765,62 @@ export class OrdersService {
     return this.repo.save(order);
   }
 
-  async updateStatus(id: number, dto: UpdateOrderStatusDto) {
+  async updateStatus(id: number, dto: UpdateOrderStatusDto, isAdmin = false) {
     const order = await this.findOne(id);
+
+    /* ── delivered gating (§4.5 OTP / §3.4 geofence) — admin key bypasses ── */
+    if (dto.status === 'delivered' && !isAdmin) {
+      if (order.deliveryOtp) {
+        if (!dto.otp || dto.otp.trim() !== order.deliveryOtp) {
+          throw new BadRequestException(
+            'Wrong OTP. Ask the customer for the 4-digit code on their tracking page.');
+        }
+      } else if (order.deliveryLat != null && order.deliveryLng != null
+                 && dto.riderLat != null && dto.riderLng != null) {
+        // legacy orders without OTP: geofence 150m
+        const d = haversineKm(dto.riderLat, dto.riderLng,
+          Number(order.deliveryLat), Number(order.deliveryLng));
+        if (d > 0.15) {
+          throw new BadRequestException(
+            `You're ${(d * 1000).toFixed(0)}m from the customer. Get closer to mark delivered.`);
+        }
+      }
+    }
+
     order.status = dto.status;
     /* lifecycle timestamps */
     const now = new Date();
     if (dto.status === 'order_confirmed' && !order.acceptedAt) order.acceptedAt = now;
-    if (dto.status === 'out_for_delivery' && !order.pickedUpAt) order.pickedUpAt = now;
+    if (dto.status === 'out_for_delivery' && !order.pickedUpAt) {
+      order.pickedUpAt = now;
+      /* mint the handoff OTP the moment the order leaves the kitchen (§4.5) */
+      if (!order.deliveryOtp) {
+        order.deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
+      }
+    }
     if (dto.status === 'delivered') {
       order.deliveredAt = now;
       if (order.deliveryPartnerId) {
         await this.dataSource.query(
           `UPDATE delivery_partners SET is_available = true WHERE id = $1`, [order.deliveryPartnerId]);
+        /* §3.3: clear rider's last position so it doesn't leak into idle state */
+        await this.dataSource.query(
+          `UPDATE delivery_partners SET current_lat = NULL, current_lng = NULL WHERE id = $1`,
+          [order.deliveryPartnerId]);
+        /* §4.1/§4.2: credit the rider — base fare + distance pay + THE TIP.
+           ON CONFLICT (order_id) keeps this idempotent under retries. */
+        const cfg = await this.settings.get();
+        const distancePay = order.distanceKm != null
+          ? Number(order.distanceKm) * Number(cfg.riderPerKmPay) : 0;
+        const tip = Number((order as any).tip) || 0;
+        const totalPay = Number(cfg.riderBaseFare) + distancePay + tip;
+        await this.dataSource.query(
+          `INSERT INTO rider_earnings
+             (delivery_partner_id, order_id, base_fare, distance_pay, tip, total)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (order_id) DO NOTHING`,
+          [order.deliveryPartnerId, id, cfg.riderBaseFare,
+           Math.round(distancePay * 100) / 100, tip, Math.round(totalPay * 100) / 100]);
       }
     }
     if (dto.status === 'cancelled') {

@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
+import { haversineKm } from '../common/geo.util';
 import { DeliveryPartner } from './delivery-partner.entity';
 import { CreateDeliveryPartnerDto } from './create-delivery-partner.dto';
 import { UpdateDeliveryPartnerDto } from './update-delivery-partner.dto';
@@ -10,6 +11,7 @@ export class DeliveryPartnerService {
   constructor(
     @InjectRepository(DeliveryPartner)
     private readonly repo: Repository<DeliveryPartner>,
+    private readonly dataSource: DataSource,
   ) {}
 
   findAll() {
@@ -42,7 +44,84 @@ export class DeliveryPartnerService {
   async updateLocation(id: number, lat: number, lng: number) {
     const item = await this.findOne(id);
     Object.assign(item, { currentLat: lat, currentLng: lng, locationUpdatedAt: new Date() });
-    return this.repo.save(item);
+    const saved = await this.repo.save(item);
+
+    /* §3.5 auto "arriving soon": rider within 1 km of an active
+       out_for_delivery destination → flip the status automatically. */
+    try {
+      const rows = await this.dataSource.query(
+        `SELECT id, order_number, user_id, delivery_lat, delivery_lng
+           FROM orders
+          WHERE delivery_partner_id = $1 AND status = 'out_for_delivery'
+            AND delivery_lat IS NOT NULL AND delivery_lng IS NOT NULL
+          LIMIT 1`, [id]);
+      if (rows.length) {
+        const o = rows[0];
+        const d = haversineKm(lat, lng, Number(o.delivery_lat), Number(o.delivery_lng));
+        if (d <= 1) {
+          await this.dataSource.query(
+            `UPDATE orders SET status = 'arriving_soon', updated_at = now() WHERE id = $1`, [o.id]);
+          await this.dataSource.query(
+            `INSERT INTO order_status_history (order_id, status, note)
+             VALUES ($1,'arriving_soon','Auto: rider within 1 km')`, [o.id]);
+          if (o.user_id) {
+            await this.dataSource.query(
+              `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+               VALUES ($1,$2,'in_app','📍 Arriving soon',$3,true)`,
+              [o.user_id, o.id, `Order ${o.order_number}: your rider is almost there!`]);
+          }
+        }
+      }
+    } catch { /* never block a location ping on this */ }
+    return saved;
+  }
+
+  /* ── §4.2/§4.3/§4.4: earnings, COD cash-in-hand, delivery history ── */
+  async earnings(id: number) {
+    await this.findOne(id); // 404 if no such rider
+    const [today] = await this.dataSource.query(
+      `SELECT COALESCE(SUM(total),0)::numeric AS amount, COUNT(*)::int AS deliveries
+         FROM rider_earnings
+        WHERE delivery_partner_id = $1 AND created_at >= date_trunc('day', now())`, [id]);
+    const [week] = await this.dataSource.query(
+      `SELECT COALESCE(SUM(total),0)::numeric AS amount, COUNT(*)::int AS deliveries
+         FROM rider_earnings
+        WHERE delivery_partner_id = $1 AND created_at >= date_trunc('week', now())`, [id]);
+    /* COD cash in hand = COD totals delivered − deposits recorded by admin */
+    const [cod] = await this.dataSource.query(
+      `SELECT COALESCE(SUM(o.total),0)::numeric AS collected
+         FROM orders o
+         JOIN payments p ON p.order_id = o.id AND p.method = 'cod'
+        WHERE o.delivery_partner_id = $1 AND o.status = 'delivered'`, [id]);
+    const [dep] = await this.dataSource.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS deposited
+         FROM rider_cash_deposits WHERE delivery_partner_id = $1`, [id]);
+    const history = await this.dataSource.query(
+      `SELECT e.order_id AS "orderId", o.order_number AS "orderNumber",
+              e.base_fare AS "baseFare", e.distance_pay AS "distancePay",
+              e.tip, e.total, e.created_at AS "createdAt"
+         FROM rider_earnings e
+         LEFT JOIN orders o ON o.id = e.order_id
+        WHERE e.delivery_partner_id = $1
+        ORDER BY e.created_at DESC LIMIT 30`, [id]);
+    return {
+      today: { amount: Number(today.amount), deliveries: today.deliveries },
+      week: { amount: Number(week.amount), deliveries: week.deliveries },
+      cashInHand: Math.max(0, Number(cod.collected) - Number(dep.deposited)),
+      codCollected: Number(cod.collected),
+      codDeposited: Number(dep.deposited),
+      history,
+    };
+  }
+
+  /* §4.3 admin records a cash deposit (route is admin-key protected) */
+  async recordDeposit(id: number, amount: number, note?: string) {
+    await this.findOne(id);
+    if (!(amount > 0)) throw new BadRequestException('Deposit amount must be > 0');
+    const [row] = await this.dataSource.query(
+      `INSERT INTO rider_cash_deposits (delivery_partner_id, amount, note)
+       VALUES ($1,$2,$3) RETURNING *`, [id, amount, note || null]);
+    return row;
   }
 
   async findByMobile(mobile: string) {

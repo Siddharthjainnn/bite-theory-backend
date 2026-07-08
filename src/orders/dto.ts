@@ -87,4 +87,8 @@ export class UpdateOrderDto {
 export class UpdateOrderStatusDto {
   @IsIn(ORDER_STATUSES) status!: string;
   @IsOptional() @IsString() note?: string;
+  /* delivered handoff proof (§4.5 / §3.4) */
+  @IsOptional() @IsString() @MaxLength(4) otp?: string;
+  @IsOptional() @IsNumber() riderLat?: number;
+  @IsOptional() @IsNumber() riderLng?: number;
 }

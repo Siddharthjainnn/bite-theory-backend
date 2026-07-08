@@ -135,6 +135,14 @@ export class OrdersController {
   @Post() create(@Body() dto: CreateOrderDto) { return this.service.create(dto); }
 
   @Patch(':id') update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateOrderDto) { return this.service.update(id, dto); }
-  @Patch(':id/status') updateStatus(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateOrderStatusDto) { return this.service.updateStatus(id, dto); }
+  @Patch(':id/status')
+  updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateOrderStatusDto,
+    @Req() req: Request,
+  ) {
+    // admin panel can force any status without OTP/geofence
+    return this.service.updateStatus(id, dto, this.isAdmin(req));
+  }
   @Delete(':id') remove(@Param('id', ParseIntPipe) id: number) { return this.service.remove(id); }
 }

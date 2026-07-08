@@ -64,6 +64,13 @@ export class StoreSettings {
   @Column({ type: 'numeric', name: 'free_delivery_within_km', default: 2 })
   freeDeliveryWithinKm: number;
 
+  /* what the rider earns per delivery (§4.2) */
+  @Column({ type: 'numeric', name: 'rider_base_fare', default: 20 })
+  riderBaseFare: number;
+
+  @Column({ type: 'numeric', name: 'rider_per_km_pay', default: 5 })
+  riderPerKmPay: number;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

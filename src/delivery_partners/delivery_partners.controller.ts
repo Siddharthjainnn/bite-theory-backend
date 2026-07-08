@@ -27,6 +27,22 @@ export class DeliveryPartnerController {
     return this.service.findOne(id);
   }
 
+  /** Rider dashboard: today/week earnings, COD cash-in-hand, delivery history. */
+  @Get(':id/earnings')
+  earnings(@Param('id', ParseIntPipe) id: number) {
+    return this.service.earnings(id);
+  }
+
+  /** Admin records COD cash deposited by the rider (admin key required —
+      POST routes not on the public whitelist are guarded globally). */
+  @Post(':id/deposits')
+  recordDeposit(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { amount: number; note?: string },
+  ) {
+    return this.service.recordDeposit(id, Number(body.amount), body.note);
+  }
+
   @Post()
   create(@Body() dto: CreateDeliveryPartnerDto) {
     return this.service.create(dto);
