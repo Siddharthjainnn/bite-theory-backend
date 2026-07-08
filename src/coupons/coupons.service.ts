@@ -18,12 +18,19 @@ export class CouponService {
   }
 
   /** Validate a coupon code for a given subtotal (no usage bump here). */
-  async validate(code: string, subtotal: number) {
+  async validate(code: string, subtotal: number, userId?: number) {
     const coupon = await this.repo
       .createQueryBuilder('c')
       .where('UPPER(c.code) = UPPER(:code)', { code: (code || '').trim() })
       .getOne();
-    const result = computeCouponDiscount(coupon as any, Number(subtotal) || 0);
+    let usedByUser = 0;
+    if (coupon && userId) {
+      const r = await this.repo.query(
+        `SELECT COUNT(*)::int AS n FROM coupon_redemptions
+          WHERE coupon_id = $1 AND user_id = $2`, [coupon.id, userId]);
+      usedByUser = Number(r[0]?.n || 0);
+    }
+    const result = computeCouponDiscount(coupon as any, Number(subtotal) || 0, usedByUser);
     return { ...result, couponId: result.valid && coupon ? Number(coupon.id) : null };
   }
 

@@ -29,6 +29,9 @@ export class Coupon {
   @Column({ type: 'integer', name: 'used_count', nullable: true })
   usedCount: number;
 
+  @Column({ type: 'integer', name: 'per_user_limit', nullable: true })
+  perUserLimit: number;
+
   @Column({ type: 'timestamptz', name: 'valid_from', nullable: true })
   validFrom: Date;
 

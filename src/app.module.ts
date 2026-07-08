@@ -36,6 +36,7 @@ import { RoleModule } from './roles/roles.module';
 import { PermissionModule } from './permissions/permissions.module';
 import { AdminUserModule } from './admin_users/admin_users.module';
 import { AuditLogModule } from './audit_logs/audit_logs.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { AuditLogModule } from './audit_logs/audit_logs.module';
     AdminUserModule,
     AuditLogModule,
     UploadModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [

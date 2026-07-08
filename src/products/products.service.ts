@@ -16,9 +16,22 @@ export class ProductsService {
     private readonly repo: Repository<Product>,
   ) {}
 
-  // GET /products
-  findAll() {
-    return this.repo.find({ order: { id: 'DESC' } });
+  // GET /products — same shape as before, PLUS live stock status so the
+  // storefront can show "Sold out" / "Only few left!" instead of items
+  // silently vanishing.
+  async findAll() {
+    const products = await this.repo.find({ order: { id: 'DESC' } });
+    const inv = await this.repo.query(
+      `SELECT product_id, quantity, stock_status FROM inventory`);
+    const by = new Map<number, any>(inv.map((r: any) => [Number(r.product_id), r]));
+    return products.map((p) => {
+      const row = by.get(Number(p.id));
+      return {
+        ...p,
+        stockStatus: row?.stock_status || 'in_stock',
+        stockQty: row ? Number(row.quantity) : null,
+      };
+    });
   }
 
   // GET /products/:id

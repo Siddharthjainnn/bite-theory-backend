@@ -6,9 +6,10 @@ import { OrdersService } from './orders.service';
 import { OrdersController } from './orders.controller';
 import { RazorpayService } from './razorpay.service';
 import { MailService } from '../common/mail.service';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory])],
+  imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule],
   controllers: [OrdersController],
   providers: [OrdersService, RazorpayService, MailService],
 })

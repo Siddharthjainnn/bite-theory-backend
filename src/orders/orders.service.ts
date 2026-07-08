@@ -11,9 +11,7 @@ import {
 import { computeCouponDiscount } from '../coupons/coupon.util';
 import { RazorpayService } from './razorpay.service';
 import { MailService } from '../common/mail.service';
-
-const DELIVERY_CHARGE = 30;
-const FREE_DELIVERY_ABOVE = 500;
+import { SettingsService } from '../settings/settings.service';
 
 @Injectable()
 export class OrdersService {
@@ -23,6 +21,7 @@ export class OrdersService {
     @InjectDataSource() private dataSource: DataSource,
     private readonly razorpay: RazorpayService,
     private readonly mail: MailService,
+    private readonly settings: SettingsService,
   ) {}
 
   findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -102,6 +101,12 @@ export class OrdersService {
       throw new BadRequestException('Online payment is not available right now.');
     }
     if (!dto.items?.length) throw new BadRequestException('Cart is empty');
+    {
+      const storeStatus = await this.settings.status();
+      if (!storeStatus.open) {
+        throw new BadRequestException(storeStatus.message || 'We are closed right now.');
+      }
+    }
 
     const priced = await this.priceCart({
       userId: dto.userId,
@@ -167,12 +172,28 @@ export class OrdersService {
     if (input.couponCode) {
       const rows = await this.dataSource.query(
         `SELECT * FROM coupons WHERE UPPER(code) = UPPER($1) LIMIT 1`, [input.couponCode.trim()]);
-      const result = computeCouponDiscount(rows[0], subtotal);
+      let usedByUser = 0;
+      if (rows[0]) {
+        const r = await this.dataSource.query(
+          `SELECT COUNT(*)::int AS n FROM coupon_redemptions
+            WHERE coupon_id = $1 AND user_id = $2`, [rows[0].id, input.userId]);
+        usedByUser = Number(r[0]?.n || 0);
+      }
+      const result = computeCouponDiscount(rows[0], subtotal, usedByUser);
       if (!result.valid) throw new BadRequestException(result.message);
       discount = result.discount;
     }
 
-    const deliveryCharge = subtotal - discount >= FREE_DELIVERY_ABOVE ? 0 : DELIVERY_CHARGE;
+    const cfg = await this.settings.get();
+    if (subtotal < cfg.minOrderAmount) {
+      throw new BadRequestException(
+        `Minimum order is ₹${cfg.minOrderAmount}. Add ₹${(cfg.minOrderAmount - subtotal).toFixed(0)} more to checkout.`);
+    }
+    if (cfg.maxOrderAmount > 0 && subtotal > cfg.maxOrderAmount) {
+      throw new BadRequestException(
+        `Maximum order value is ₹${cfg.maxOrderAmount}. Please split into two orders.`);
+    }
+    const deliveryCharge = subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
     const tip = Math.max(0, Math.min(Number(input.tipAmount) || 0, 500)); // cap ₹500
     let payable = subtotal - discount + deliveryCharge + tip;
 
@@ -195,6 +216,12 @@ export class OrdersService {
    */
   async checkout(dto: CheckoutDto, opts: { skipSignatureCheck?: boolean } = {}) {
     if (!dto.items?.length) throw new BadRequestException('Cart is empty');
+    {
+      const storeStatus = await this.settings.status();
+      if (!storeStatus.open) {
+        throw new BadRequestException(storeStatus.message || 'We are closed right now.');
+      }
+    }
 
     // For online payments, verify the Razorpay signature BEFORE writing anything.
     // If it doesn't check out, we never create the order — no unpaid ghost orders.
@@ -246,19 +273,47 @@ export class OrdersService {
         return { productId: Number(p.id), productName: p.name, unitPrice: price, quantity: i.quantity, lineTotal };
       });
 
+      /* 1b) stock check — reject before charging, never oversell.
+         FOR UPDATE locks the rows so two simultaneous checkouts can't
+         both grab the last plate. */
+      const invRows = await mgr.query(
+        `SELECT product_id, quantity, stock_status FROM inventory
+          WHERE product_id = ANY($1) FOR UPDATE`, [ids]);
+      const invBy = new Map<number, any>(invRows.map((r: any) => [Number(r.product_id), r]));
+      for (const l of lines) {
+        const row = invBy.get(l.productId);
+        if (!row) continue; // untracked item — allow
+        if (row.stock_status === 'out_of_stock' || Number(row.quantity) < l.quantity) {
+          throw new BadRequestException(
+            `"${l.productName}" has only ${Math.max(0, Number(row.quantity))} left. Please reduce the quantity.`);
+        }
+      }
+
       /* 2) coupon (server-side validation) */
       let discount = 0; let couponId: number | null = null;
       if (dto.couponCode) {
         const rows = await mgr.query(
           `SELECT * FROM coupons WHERE UPPER(code) = UPPER($1) LIMIT 1`, [dto.couponCode.trim()]);
-        const result = computeCouponDiscount(rows[0], subtotal);
+        let usedByUser = 0;
+        if (rows[0]) {
+          const r = await mgr.query(
+            `SELECT COUNT(*)::int AS n FROM coupon_redemptions
+              WHERE coupon_id = $1 AND user_id = $2`, [rows[0].id, dto.userId]);
+          usedByUser = Number(r[0]?.n || 0);
+        }
+        const result = computeCouponDiscount(rows[0], subtotal, usedByUser);
         if (!result.valid) throw new BadRequestException(result.message);
         discount = result.discount;
         couponId = Number(rows[0].id);
       }
 
       /* 3) delivery charge + rider tip */
-      const deliveryCharge = subtotal - discount >= FREE_DELIVERY_ABOVE ? 0 : DELIVERY_CHARGE;
+      const cfg = await this.settings.get();
+      if (subtotal < cfg.minOrderAmount)
+        throw new BadRequestException(`Minimum order is ₹${cfg.minOrderAmount}.`);
+      if (cfg.maxOrderAmount > 0 && subtotal > cfg.maxOrderAmount)
+        throw new BadRequestException(`Maximum order value is ₹${cfg.maxOrderAmount}.`);
+      const deliveryCharge = subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
       const tip = Math.max(0, Math.min(Number(dto.tipAmount) || 0, 500));
       let payable = subtotal - discount + deliveryCharge + tip;
 
@@ -344,6 +399,9 @@ export class OrdersService {
       if (couponId) {
         await mgr.query(
           `UPDATE coupons SET used_count = COALESCE(used_count,0) + 1 WHERE id = $1`, [couponId]);
+        await mgr.query(
+          `INSERT INTO coupon_redemptions (coupon_id, user_id, order_id)
+           VALUES ($1, $2, $3)`, [couponId, dto.userId, orderId]);
       }
 
       /* 11) payment row */
