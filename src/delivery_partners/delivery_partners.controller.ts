@@ -1,6 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { DeliveryPartnerService } from './delivery_partners.service';
 import { CreateDeliveryPartnerDto } from './create-delivery-partner.dto';
 import { UpdateDeliveryPartnerDto } from './update-delivery-partner.dto';
@@ -15,6 +16,7 @@ export class DeliveryPartnerController {
   }
 
   /** Rider portal login: mobile number + shared access code. */
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   login(@Body() body: { mobile: string; code?: string }) {
     return this.service.login((body.mobile || '').trim(), (body.code || '').trim());

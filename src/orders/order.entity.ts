@@ -28,6 +28,7 @@ export class Order {
   @Column({ name: 'delivered_at', type: 'timestamptz', nullable: true }) deliveredAt!: Date;
   @Column({ name: 'cancelled_at', type: 'timestamptz', nullable: true }) cancelledAt!: Date;
   @Column({ name: 'eta_minutes', type: 'integer', nullable: true }) etaMinutes!: number;
+  @Column({ name: 'distance_km', type: 'numeric', nullable: true }) distanceKm!: number | null;
 
   /* UX extras */
   @Column({ type: 'numeric', default: 0, nullable: true }) tip!: number;

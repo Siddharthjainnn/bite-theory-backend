@@ -42,9 +42,15 @@ export class UserAuthGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request & { authUserId?: number }>();
 
-    // Not configured yet → allow, but warn loudly (set USER_TOKEN_SECRET to enforce).
+    // FAIL CLOSED in production: if the secret is missing we cannot establish
+    // identity, so protected routes must reject — otherwise anyone can act as
+    // any userId just by putting it in the request body.
     if (!process.env.USER_TOKEN_SECRET) {
-      this.logger.warn('USER_TOKEN_SECRET not set — user-token auth is NOT enforced.');
+      if (process.env.NODE_ENV === 'production') {
+        this.logger.error('USER_TOKEN_SECRET not set — rejecting protected request (fail closed).');
+        throw new UnauthorizedException('User auth is not configured on the server.');
+      }
+      this.logger.warn('USER_TOKEN_SECRET not set — user-token auth is NOT enforced (dev only).');
       return true;
     }
 

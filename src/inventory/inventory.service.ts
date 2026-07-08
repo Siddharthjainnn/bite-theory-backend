@@ -28,9 +28,28 @@ export class InventoryService {
   }
 
   async update(id: number, dto: UpdateInventoryDto) {
-    await this.findOne(id);
+    const before = await this.findOne(id);
     await this.repo.update(id, dto as Partial<Inventory>);
-    return this.findOne(id);
+    const after = await this.findOne(id);
+
+    /* Restock re-activation (audit §6.1): checkout flips a product to
+       'inactive' when stock hits 0, but nothing ever flipped it back.
+       When quantity goes 0 → >0, bring the product back on the storefront
+       and refresh its stock_status. */
+    if (after.productId != null && Number(after.quantity) > 0) {
+      const low = Number(after.lowThreshold ?? 0);
+      const stockStatus = Number(after.quantity) <= low ? 'low' : 'in_stock';
+      await this.repo.manager.query(
+        `UPDATE products SET status = 'active', updated_at = now()
+          WHERE id = $1 AND status = 'inactive'`, [after.productId]);
+      await this.repo.update(id, { stockStatus } as Partial<Inventory>);
+      after.stockStatus = stockStatus;
+    } else if (after.productId != null && Number(after.quantity) === 0
+               && Number(before.quantity) > 0) {
+      await this.repo.update(id, { stockStatus: 'out_of_stock' } as Partial<Inventory>);
+      after.stockStatus = 'out_of_stock';
+    }
+    return after;
   }
 
   async remove(id: number) {

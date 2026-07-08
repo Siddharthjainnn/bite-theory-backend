@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
   import { ServeStaticModule } from '@nestjs/serve-static';
@@ -40,6 +41,9 @@ import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
+    // Global rate limit: 60 req/min/IP (audit §1.5). Login + coupon routes
+    // get tighter limits via @Throttle on their controllers if needed.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRoot({
       type: 'postgres',
@@ -91,6 +95,7 @@ import { SettingsModule } from './settings/settings.module';
   providers: [
     AppService,
     { provide: APP_GUARD, useClass: AdminWriteGuard },
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule {}

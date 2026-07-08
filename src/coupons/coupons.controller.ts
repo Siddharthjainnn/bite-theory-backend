@@ -1,6 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { CouponService } from './coupons.service';
 import { ValidateCouponDto } from './validate-coupon.dto';
 import { CreateCouponDto } from './create-coupon.dto';
@@ -16,6 +17,7 @@ export class CouponController {
   }
 
   /** Customer-facing: validate a code against a cart subtotal. */
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @Post('validate')
   validate(@Body() dto: ValidateCouponDto) {
     return this.service.validate(dto.code, dto.subtotal, dto.userId);

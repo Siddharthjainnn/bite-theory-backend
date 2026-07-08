@@ -1,4 +1,4 @@
-import {
+import { ForbiddenException,
   Injectable, NotFoundException, BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
@@ -10,6 +10,7 @@ import {
 } from './dto';
 import { computeCouponDiscount } from '../coupons/coupon.util';
 import { RazorpayService } from './razorpay.service';
+import { haversineKm } from '../common/geo.util';
 import { MailService } from '../common/mail.service';
 import { SettingsService } from '../settings/settings.service';
 
@@ -75,6 +76,23 @@ export class OrdersService {
     return { ...order, items, history };
   }
 
+  /** Ownership-checked order read (customer sees only their own; admin sees all). */
+  async findOneFullOwned(id: number, isAdmin: boolean, authUserId: number | null) {
+    const order = await this.findOne(id);
+    // When token enforcement is on and the caller isn't admin, they must own it.
+    if (!isAdmin && process.env.USER_TOKEN_SECRET) {
+      if (!authUserId || Number(order.userId) !== Number(authUserId)) {
+        throw new ForbiddenException('Not your order');
+      }
+    }
+    return this.findOneFull(id);
+  }
+
+  async trackOwned(id: number, isAdmin: boolean, authUserId: number | null) {
+    await this.findOneFullOwned(id, isAdmin, authUserId); // throws if not allowed
+    return this.track(id);
+  }
+
   /** Live tracking payload: order + destination + driver location. */
   async track(id: number) {
     const full = await this.findOneFull(id);
@@ -87,7 +105,29 @@ export class OrdersService {
            FROM delivery_partners WHERE id = $1`, [full.deliveryPartnerId]);
       partner = rows[0] || null;
     }
-    return { ...full, partner };
+
+    /* store pin (kitchen) so the map shows something before a rider is assigned */
+    const cfg = await this.settings.get();
+    const store = cfg.storeLat != null && cfg.storeLng != null
+      ? { lat: Number(cfg.storeLat), lng: Number(cfg.storeLng), address: cfg.storeAddress || null }
+      : null;
+
+    /* live ETA: recompute from the rider's current position each poll,
+       instead of the frozen value stored at checkout */
+    let etaMinutes = full.etaMinutes ?? null;
+    const destLat = full.deliveryLat != null ? Number(full.deliveryLat) : null;
+    const destLng = full.deliveryLng != null ? Number(full.deliveryLng) : null;
+    const kmph = Number(cfg.avgRiderKmph) || 20;
+    if (destLat != null && destLng != null && partner?.lat != null && partner?.lng != null &&
+        ['out_for_delivery', 'arriving_soon'].includes(String(full.status))) {
+      const remainKm = haversineKm(Number(partner.lat), Number(partner.lng), destLat, destLng);
+      etaMinutes = Math.max(1, Math.round((remainKm / kmph) * 60));
+    } else if (destLat != null && destLng != null && store && !['delivered', 'cancelled'].includes(String(full.status))) {
+      const distKm = haversineKm(store.lat, store.lng, destLat, destLng);
+      etaMinutes = Math.round((Number(cfg.avgPrepMinutes) || 20) + (distKm / kmph) * 60);
+    }
+
+    return { ...full, etaMinutes, partner, store };
   }
 
   /**
@@ -114,6 +154,9 @@ export class OrdersService {
       couponCode: dto.couponCode,
       useWallet: dto.useWallet,
       tipAmount: dto.tipAmount,
+      addressId: dto.addressId,
+      deliveryLat: dto.deliveryLat ?? null,
+      deliveryLng: dto.deliveryLng ?? null,
     });
 
     if (priced.payable < 1) {
@@ -152,6 +195,7 @@ export class OrdersService {
   private async priceCart(input: {
     userId: number; items: { productId: number; quantity: number }[];
     couponCode?: string; useWallet?: boolean; tipAmount?: number;
+    addressId?: number; deliveryLat?: number | null; deliveryLng?: number | null;
   }) {
     const ids = input.items.map((i) => i.productId);
     const products = await this.dataSource.query(
@@ -193,7 +237,21 @@ export class OrdersService {
       throw new BadRequestException(
         `Maximum order value is ₹${cfg.maxOrderAmount}. Please split into two orders.`);
     }
-    const deliveryCharge = subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
+    /* destination coords: explicit > saved address */
+    let dLat = input.deliveryLat ?? null;
+    let dLng = input.deliveryLng ?? null;
+    if ((dLat == null || dLng == null) && input.addressId) {
+      const a = await this.dataSource.query(
+        `SELECT latitude, longitude FROM addresses WHERE id = $1 AND user_id = $2`,
+        [input.addressId, input.userId]);
+      if (a.length) {
+        dLat = dLat ?? (a[0].latitude != null ? Number(a[0].latitude) : null);
+        dLng = dLng ?? (a[0].longitude != null ? Number(a[0].longitude) : null);
+      }
+    }
+
+    const { deliveryCharge, distanceKm, etaMinutes } =
+      this.deliveryPricing(cfg, subtotal - discount, dLat, dLng);
     const tip = Math.max(0, Math.min(Number(input.tipAmount) || 0, 500)); // cap ₹500
     let payable = subtotal - discount + deliveryCharge + tip;
 
@@ -206,7 +264,49 @@ export class OrdersService {
       payable -= walletUsed;
     }
 
-    return { subtotal, discount, deliveryCharge, tip, walletUsed, payable };
+    return { subtotal, discount, deliveryCharge, tip, walletUsed, payable, distanceKm, etaMinutes };
+  }
+
+  /**
+   * ONE formula for delivery charge / radius / ETA, shared by
+   * createPaymentOrder (priceCart) and checkout — so the Razorpay amount
+   * and the final order total can never disagree.
+   */
+  private deliveryPricing(
+    cfg: any, netSubtotal: number,
+    dLat: number | null, dLng: number | null,
+  ): { deliveryCharge: number; distanceKm: number | null; etaMinutes: number } {
+    // free-above threshold always wins
+    if (netSubtotal >= Number(cfg.freeDeliveryAbove)) {
+      return { deliveryCharge: 0, distanceKm: this.distKmOrNull(cfg, dLat, dLng), etaMinutes: this.etaFor(cfg, dLat, dLng) };
+    }
+    const distanceKm = this.distKmOrNull(cfg, dLat, dLng);
+    if (distanceKm == null) {
+      // no store pin or no dest coords yet → flat legacy charge, default ETA
+      return { deliveryCharge: Number(cfg.deliveryCharge), distanceKm: null, etaMinutes: 35 };
+    }
+    const radius = Number(cfg.deliveryRadiusKm) || 0;
+    if (radius > 0 && distanceKm > radius) {
+      throw new BadRequestException(
+        `Sorry, you're ${distanceKm.toFixed(1)} km away — outside our ${radius} km delivery zone.`);
+    }
+    const freeKm = Number(cfg.freeDeliveryWithinKm) || 0;
+    const deliveryCharge = distanceKm <= freeKm
+      ? 0
+      : Math.round(Number(cfg.baseDeliveryCharge) + distanceKm * Number(cfg.perKmCharge));
+    return { deliveryCharge, distanceKm, etaMinutes: this.etaFor(cfg, dLat, dLng) };
+  }
+
+  private distKmOrNull(cfg: any, dLat: number | null, dLng: number | null): number | null {
+    if (cfg.storeLat == null || cfg.storeLng == null || dLat == null || dLng == null) return null;
+    return haversineKm(Number(cfg.storeLat), Number(cfg.storeLng), Number(dLat), Number(dLng));
+  }
+
+  private etaFor(cfg: any, dLat: number | null, dLng: number | null): number {
+    const d = this.distKmOrNull(cfg, dLat, dLng);
+    if (d == null) return 35;
+    const kmph = Number(cfg.avgRiderKmph) || 20;
+    return Math.round((Number(cfg.avgPrepMinutes) || 20) + (d / kmph) * 60);
   }
 
   /**
@@ -313,7 +413,7 @@ export class OrdersService {
         throw new BadRequestException(`Minimum order is ₹${cfg.minOrderAmount}.`);
       if (cfg.maxOrderAmount > 0 && subtotal > cfg.maxOrderAmount)
         throw new BadRequestException(`Maximum order value is ₹${cfg.maxOrderAmount}.`);
-      const deliveryCharge = subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
+      let deliveryCharge = subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
       const tip = Math.max(0, Math.min(Number(dto.tipAmount) || 0, 500));
       let payable = subtotal - discount + deliveryCharge + tip;
 
@@ -357,6 +457,21 @@ export class OrdersService {
       }
       if (!dto.addressId && !deliveryAddress) throw new BadRequestException('Delivery address required');
 
+      /* 5b) distance: SAME formula as priceCart (radius reject, tiered charge, ETA) */
+      const dp = this.deliveryPricing(cfg, subtotal - discount, deliveryLat, deliveryLng);
+      const distanceKm = dp.distanceKm;
+      const etaMinutes = dp.etaMinutes;
+      if (dp.deliveryCharge !== deliveryCharge) {
+        payable += dp.deliveryCharge - deliveryCharge; // adjust payable by the delta
+        deliveryCharge = dp.deliveryCharge;
+      }
+
+      /* re-check online payment amount if the charge changed after address resolution */
+      if (isOnline && Math.abs(Math.round(payable * 100) - paidAmountPaise) > 0) {
+        throw new BadRequestException(
+          'Paid amount does not match the order total. Please retry payment; contact support if you were charged.');
+      }
+
       /* 6) create order */
       const orderNumber = 'BT' + Date.now().toString(36).toUpperCase() +
         Math.random().toString(36).slice(2, 5).toUpperCase();
@@ -364,13 +479,13 @@ export class OrdersService {
       const [order] = await mgr.query(
         `INSERT INTO orders (order_number, user_id, address_id, coupon_id, subtotal, discount,
              delivery_charge, tax, wallet_used, total, status, delivery_slot,
-             delivery_lat, delivery_lng, delivery_address, eta_minutes,
+             delivery_lat, delivery_lng, delivery_address, eta_minutes, distance_km,
              tip, delivery_instructions, cooking_note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18)
          RETURNING *, order_number AS "orderNumber", user_id AS "userId", placed_at AS "placedAt"`,
         [orderNumber, dto.userId, dto.addressId ?? null, couponId, subtotal, discount,
          deliveryCharge, walletUsed, total, dto.deliverySlot ?? null,
-         deliveryLat, deliveryLng, deliveryAddress, 35,
+         deliveryLat, deliveryLng, deliveryAddress, etaMinutes, distanceKm,
          tip, dto.deliveryInstructions?.trim() || null, dto.cookingNote?.trim() || null]);
       const orderId = Number(order.id);
 
@@ -659,7 +774,15 @@ export class OrdersService {
           `UPDATE delivery_partners SET is_available = true WHERE id = $1`, [order.deliveryPartnerId]);
       }
     }
-    if (dto.status === 'cancelled') order.cancelledAt = now;
+    if (dto.status === 'cancelled') {
+      order.cancelledAt = now;
+      // free the assigned rider so they don't stay is_available=false forever
+      if (order.deliveryPartnerId) {
+        await this.dataSource.query(
+          `UPDATE delivery_partners SET is_available = true WHERE id = $1`,
+          [order.deliveryPartnerId]);
+      }
+    }
     const saved = await this.repo.save(order);
 
     /* cancelled → give the money back (online refund + wallet credit) */

@@ -1,6 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { AdminUserService } from './admin_users.service';
 import { CreateAdminUserDto } from './create-admin-user.dto';
 import { UpdateAdminUserDto } from './update-admin-user.dto';
@@ -19,6 +20,7 @@ export class AdminUserController {
     return this.service.findOne(id);
   }
 
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('login')
   login(@Body() body: { email: string; password: string }) {
     return this.service.login(body.email, body.password);

@@ -12,6 +12,10 @@ async function bootstrap() {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  if (!origins.length && process.env.NODE_ENV === 'production') {
+    // Never ship a wildcard: refuse to start until CORS_ORIGINS is set on Render.
+    throw new Error('CORS_ORIGINS must be set in production (comma-separated frontend URLs).');
+  }
   app.enableCors({ origin: origins.length ? origins : '*' });
 
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));

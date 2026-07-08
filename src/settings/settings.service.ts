@@ -37,6 +37,14 @@ export class SettingsService {
     s.freeDeliveryAbove = Number(s.freeDeliveryAbove);
     s.minOrderAmount = Number(s.minOrderAmount);
     s.maxOrderAmount = Number(s.maxOrderAmount);
+    if (s.storeLat != null) s.storeLat = Number(s.storeLat);
+    if (s.storeLng != null) s.storeLng = Number(s.storeLng);
+    s.deliveryRadiusKm = Number(s.deliveryRadiusKm ?? 8);
+    s.avgPrepMinutes = Number(s.avgPrepMinutes ?? 20);
+    s.avgRiderKmph = Number(s.avgRiderKmph ?? 20);
+    s.baseDeliveryCharge = Number(s.baseDeliveryCharge ?? 20);
+    s.perKmCharge = Number(s.perKmCharge ?? 8);
+    s.freeDeliveryWithinKm = Number(s.freeDeliveryWithinKm ?? 2);
     return s;
   }
 

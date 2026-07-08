@@ -36,6 +36,34 @@ export class StoreSettings {
   @Column({ type: 'text', name: 'timezone' })
   timezone: string;
 
+  /* ── restaurant location + distance pricing (audit §2.1) ── */
+  @Column({ type: 'numeric', name: 'store_lat', precision: 10, scale: 7, nullable: true })
+  storeLat: number | null;
+
+  @Column({ type: 'numeric', name: 'store_lng', precision: 10, scale: 7, nullable: true })
+  storeLng: number | null;
+
+  @Column({ type: 'text', name: 'store_address', nullable: true })
+  storeAddress: string | null;
+
+  @Column({ type: 'numeric', name: 'delivery_radius_km', default: 8 })
+  deliveryRadiusKm: number;
+
+  @Column({ type: 'integer', name: 'avg_prep_minutes', default: 20 })
+  avgPrepMinutes: number;
+
+  @Column({ type: 'numeric', name: 'avg_rider_kmph', default: 20 })
+  avgRiderKmph: number;
+
+  @Column({ type: 'numeric', name: 'base_delivery_charge', default: 20 })
+  baseDeliveryCharge: number;
+
+  @Column({ type: 'numeric', name: 'per_km_charge', default: 8 })
+  perKmCharge: number;
+
+  @Column({ type: 'numeric', name: 'free_delivery_within_km', default: 2 })
+  freeDeliveryWithinKm: number;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

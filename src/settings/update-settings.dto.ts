@@ -36,4 +36,15 @@ export class UpdateSettingsDto {
 
   @IsOptional() @IsString()
   timezone?: string;
+
+  /* store location + distance pricing */
+  @IsOptional() @IsNumber() storeLat?: number;
+  @IsOptional() @IsNumber() storeLng?: number;
+  @IsOptional() @IsString() storeAddress?: string;
+  @IsOptional() @IsNumber() @Min(0) deliveryRadiusKm?: number;
+  @IsOptional() @IsNumber() @Min(0) avgPrepMinutes?: number;
+  @IsOptional() @IsNumber() @Min(1) avgRiderKmph?: number;
+  @IsOptional() @IsNumber() @Min(0) baseDeliveryCharge?: number;
+  @IsOptional() @IsNumber() @Min(0) perKmCharge?: number;
+  @IsOptional() @IsNumber() @Min(0) freeDeliveryWithinKm?: number;
 }
