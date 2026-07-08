@@ -17,7 +17,7 @@ export class CouponController {
 
   /** Customer-facing: validate a code against a cart subtotal. */
   @Post('validate')
-  validate(@Body() dto: ValidateCouponDto & { userId?: number }) {
+  validate(@Body() dto: ValidateCouponDto) {
     return this.service.validate(dto.code, dto.subtotal, dto.userId);
   }
 
