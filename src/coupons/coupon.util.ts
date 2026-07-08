@@ -1,6 +1,10 @@
 /**
  * Pure coupon math — shared by CouponService (validate endpoint)
  * and OrdersService (checkout transaction).
+ *
+ * NEW: per-user redemption. Pass `usedByUser` (how many times THIS user
+ * has already redeemed this code, from coupon_redemptions) and the check
+ * compares it against coupons.per_user_limit (default 1 = one-time per user).
  */
 export interface CouponRow {
   id: number | string;
@@ -11,6 +15,7 @@ export interface CouponRow {
   max_discount?: any; maxDiscount?: any;
   usage_limit?: any; usageLimit?: any;
   used_count?: any; usedCount?: any;
+  per_user_limit?: any; perUserLimit?: any;
   valid_from?: any; validFrom?: any;
   valid_until?: any; validUntil?: any;
   is_active?: any; isActive?: any;
@@ -19,6 +24,7 @@ export interface CouponRow {
 export function computeCouponDiscount(
   c: CouponRow | undefined | null,
   subtotal: number,
+  usedByUser = 0,
 ): { valid: boolean; discount: number; message: string } {
   if (!c) return { valid: false, discount: 0, message: 'Invalid coupon code' };
 
@@ -34,6 +40,12 @@ export function computeCouponDiscount(
   const limit = Number(c.usage_limit ?? c.usageLimit ?? 0);
   const used = Number(c.used_count ?? c.usedCount ?? 0);
   if (limit > 0 && used >= limit) return { valid: false, discount: 0, message: 'Coupon usage limit reached' };
+
+  // Per-user limit — default 1 (one-time redeem) when column is null.
+  const perUser = Number(c.per_user_limit ?? c.perUserLimit ?? 1);
+  if (perUser > 0 && usedByUser >= perUser) {
+    return { valid: false, discount: 0, message: 'You have already used this coupon' };
+  }
 
   const minOrder = Number(c.min_order ?? c.minOrder ?? 0);
   if (subtotal < minOrder) {
