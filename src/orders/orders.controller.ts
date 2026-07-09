@@ -8,6 +8,7 @@ import { RazorpayService } from './razorpay.service';
 import { UserAuthGuard, verifyUserToken } from '../common/user-auth.guard';
 import {
   CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
+  SetPrepVideoDto,
 } from './dto';
 
 @Controller('orders')
@@ -107,6 +108,17 @@ export class OrdersController {
     if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
     return this.service.assignRider(id, Number(body.partnerId));
   }
+  /** Admin attaches / clears a "your food being made" clip on an order. */
+  @Patch(':id/prep-video')
+  setPrepVideo(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetPrepVideoDto,
+    @Req() req: Request,
+  ) {
+    if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
+    return this.service.setPrepVideo(id, dto.prepVideoUrl ?? null);
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request & { authUserId?: number }) {
     const uid = this.isAdmin(req)

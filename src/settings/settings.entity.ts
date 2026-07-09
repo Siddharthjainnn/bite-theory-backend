@@ -4,6 +4,45 @@ export interface DayHours { open: string; close: string; closed: boolean }
 export type WeeklyHours = Record<'mon'|'tue'|'wed'|'thu'|'fri'|'sat'|'sun', DayHours>;
 export interface Holiday { date: string; note?: string }
 export interface LandingFeature { icon: string; title: string; subtitle: string }
+/** Admin-customizable invoice / bill layout (single JSONB blob). */
+export interface InvoiceColumnToggle {
+  qty: boolean;
+  unitPrice: boolean;
+  lineTotal: boolean;
+}
+export interface InvoiceConfig {
+  /* branding */
+  brandName: string;
+  logoUrl: string;
+  tagline: string;
+  addressLine: string;
+  phone: string;
+  gstin: string;
+  fssai: string;
+  /* accent + paper */
+  accentColor: string;
+  paper: 'thermal58' | 'thermal80' | 'a4';
+  /* what shows on the customer invoice */
+  showLogo: boolean;
+  showGstin: boolean;
+  showFssai: boolean;
+  showCustomer: boolean;
+  showItemsTable: boolean;
+  columns: InvoiceColumnToggle;
+  showTaxBreakup: boolean;
+  showPaymentMethod: boolean;
+  showQrNote: boolean;
+  /* copy */
+  headerNote: string;
+  footerNote: string;
+  thankYouNote: string;
+  /* chef ticket */
+  chefTicketTitle: string;
+  chefShowNotes: boolean;
+  /* behaviour */
+  autoPrintOnReady: boolean;
+}
+
 export interface LandingContent {
   logoUrl: string; brandName: string;
   tagline1: string; tagline2: string; heroSubtitle: string; heroBadge: string;
@@ -85,6 +124,10 @@ export class StoreSettings {
   /* ── desktop landing page content (admin-editable, audit: marketing site) ── */
   @Column({ type: 'jsonb', name: 'landing_content', nullable: true })
   landingContent: LandingContent | null;
+
+  /* admin-customizable invoice / bill layout (audit: printable invoices) */
+  @Column({ type: 'jsonb', name: 'invoice_config', nullable: true })
+  invoiceConfig: InvoiceConfig | null;
 
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;

@@ -1,7 +1,7 @@
 import {
   IsOptional, IsNumber, Min, IsBoolean, IsString, IsObject, IsArray,
 } from 'class-validator';
-import { WeeklyHours, Holiday, LandingContent } from './settings.entity';
+import { WeeklyHours, Holiday, LandingContent, InvoiceConfig } from './settings.entity';
 
 /**
  * IMPORTANT: main.ts uses ValidationPipe({ whitelist: true }), which STRIPS
@@ -52,4 +52,7 @@ export class UpdateSettingsDto {
 
   /* desktop landing page content (single jsonb blob) */
   @IsOptional() @IsObject() landingContent?: LandingContent;
+
+  /* admin-customizable invoice / bill layout (single jsonb blob) */
+  @IsOptional() @IsObject() invoiceConfig?: InvoiceConfig;
 }

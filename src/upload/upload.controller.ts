@@ -16,7 +16,7 @@ import * as streamifier from 'streamifier';
  * - Not set (local dev)        → fall back to disk exactly as before.
  */
 const ALLOWED_FOLDERS = ['products', 'categories', 'banners', 'users', 'reviews',
-  'delivery_partners', 'admin_users', 'support_tickets', 'misc'];
+  'delivery_partners', 'admin_users', 'support_tickets', 'misc', 'orders'];
 
 const UPLOAD_ROOT = join(process.cwd(), 'public', 'uploads');
 const PUBLIC_BASE = process.env.PUBLIC_UPLOAD_BASE || 'https://bitestheory.com/api/uploads';

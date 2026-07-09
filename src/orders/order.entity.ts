@@ -35,4 +35,8 @@ export class Order {
   @Column({ type: 'numeric', default: 0, nullable: true }) tip!: number;
   @Column({ name: 'delivery_instructions', type: 'text', nullable: true }) deliveryInstructions!: string;
   @Column({ name: 'cooking_note', type: 'text', nullable: true }) cookingNote!: string;
+
+  /* Signature feature: short "your food being made" clip the admin attaches
+     to this order. Shown to the customer on the tracking page. */
+  @Column({ name: 'prep_video_url', type: 'text', nullable: true }) prepVideoUrl!: string | null;
 }

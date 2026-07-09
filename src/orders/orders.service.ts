@@ -102,6 +102,27 @@ export class OrdersService {
     return this.findOneFull(orderId);
   }
 
+  /**
+   * Signature feature: admin attaches (or clears) a short "your food being
+   * made" clip on a specific order. Pushes an in-app notification so the
+   * customer knows to open their tracking page and watch it.
+   */
+  async setPrepVideo(orderId: number, prepVideoUrl: string | null) {
+    const order = await this.findOne(orderId);
+    const url = (prepVideoUrl || '').trim() || null;
+    order.prepVideoUrl = url;
+    await this.repo.save(order);
+
+    if (url && order.userId) {
+      await this.dataSource.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app','🎬 Your food is being made!',$3,true)`,
+        [order.userId, orderId,
+         `Order ${order.orderNumber}: tap to watch your dish being prepared fresh.`]);
+    }
+    return this.findOneFull(orderId);
+  }
+
   async findOne(id: number) {
     const order = await this.repo.findOne({ where: { id } });
     if (!order) throw new NotFoundException(`Order ${id} not found`);
@@ -434,17 +455,25 @@ export class OrdersService {
 
       /* 2) coupon (server-side validation) */
       let discount = 0; let couponId: number | null = null;
+      let assignmentId: number | null = null;
       if (dto.couponCode) {
         const rows = await mgr.query(
           `SELECT * FROM coupons WHERE UPPER(code) = UPPER($1) LIMIT 1`, [dto.couponCode.trim()]);
         let usedByUser = 0;
+        let assigned = false;
         if (rows[0]) {
           const r = await mgr.query(
             `SELECT COUNT(*)::int AS n FROM coupon_redemptions
               WHERE coupon_id = $1 AND user_id = $2`, [rows[0].id, dto.userId]);
           usedByUser = Number(r[0]?.n || 0);
+          // admin-gifted, unused assignment → bypass usage limits (§coupon assign)
+          const a = await mgr.query(
+            `SELECT id FROM coupon_assignments
+              WHERE coupon_id = $1 AND user_id = $2 AND is_used = false
+              ORDER BY id LIMIT 1`, [rows[0].id, dto.userId]);
+          if (a[0]) { assigned = true; assignmentId = Number(a[0].id); }
         }
-        const result = computeCouponDiscount(rows[0], subtotal, usedByUser);
+        const result = computeCouponDiscount(rows[0], subtotal, usedByUser, assigned);
         if (!result.valid) throw new BadRequestException(result.message);
         discount = result.discount;
         couponId = Number(rows[0].id);
@@ -565,6 +594,13 @@ export class OrdersService {
         await mgr.query(
           `INSERT INTO coupon_redemptions (coupon_id, user_id, order_id)
            VALUES ($1, $2, $3)`, [couponId, dto.userId, orderId]);
+        // burn the admin gift so it can't be reused
+        if (assignmentId) {
+          await mgr.query(
+            `UPDATE coupon_assignments
+                SET is_used = true, order_id = $1, used_at = now()
+              WHERE id = $2`, [orderId, assignmentId]);
+        }
       }
 
       /* 11) payment row */
