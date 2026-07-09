@@ -22,6 +22,12 @@ export class DeliveryPartnerController {
     return this.service.login((body.mobile || '').trim(), (body.code || '').trim());
   }
 
+  /** Admin dispatch picker: active riders + availability + current load. */
+  @Get('for-assignment')
+  forAssignment() {
+    return this.service.forAssignment();
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.service.findOne(id);

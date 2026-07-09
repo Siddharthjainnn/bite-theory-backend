@@ -36,31 +36,69 @@ export class OrdersService {
     return rows;
   }
 
-  /** Orders ready for a rider to accept: food is (nearly) ready, no partner yet. */
+  /**
+   * DISABLED: rider self-accept flow is turned off. Dispatch is admin-only now
+   * (see assignRider). Kept returning an empty list so any stale rider client
+   * that still polls this endpoint simply sees nothing to pick up.
+   */
   async availableForRiders() {
-    const rows = await this.repo.createQueryBuilder('o')
-      .where('o.delivery_partner_id IS NULL')
-      .andWhere(`o.status IN ('preparing_food','food_ready')`)
-      .orderBy('o.placed_at', 'ASC')
-      .getMany();
-    rows.forEach((r) => { (r as any).deliveryOtp = null; });
-    return rows;
+    return [] as Order[];
   }
 
-  /** Rider accepts an order — atomic claim so two riders can't take the same one. */
-  async acceptOrder(orderId: number, partnerId: number) {
-    const res = await this.dataSource.query(
-      `UPDATE orders SET delivery_partner_id = $1, status = 'assigned_to_delivery', updated_at = now()
-        WHERE id = $2 AND delivery_partner_id IS NULL
-          AND status IN ('preparing_food','food_ready')
-        RETURNING id`, [partnerId, orderId]);
-    if (!res[0]?.length && !res.length) throw new BadRequestException('Order already taken by another rider');
-    // pg driver returns [rows, count] via dataSource.query for UPDATE..RETURNING in some versions; normalize:
-    const rows = Array.isArray(res[0]) ? res[0] : res;
-    if (!rows.length) throw new BadRequestException('Order already taken by another rider');
-    await this.historyRepo.save(this.historyRepo.create({ orderId, status: 'assigned_to_delivery', note: `Accepted by rider #${partnerId}` }));
+  /**
+   * DISABLED: riders can no longer claim orders themselves. The admin assigns a
+   * specific rider via assignRider(). This method is intentionally blocked so an
+   * old rider app hitting POST /orders/:id/accept can't create assignments.
+   */
+  async acceptOrder(_orderId: number, _partnerId: number): Promise<never> {
+    throw new ForbiddenException(
+      'Self-accept is disabled. Orders are dispatched by the admin.');
+  }
+
+  /**
+   * Admin dispatch: attach a SPECIFIC rider to an order and move it to
+   * assigned_to_delivery. Supports reassigning (frees the previous rider).
+   */
+  async assignRider(orderId: number, partnerId: number) {
+    const order = await this.findOne(orderId);
+    if (['delivered', 'cancelled'].includes(order.status)) {
+      throw new BadRequestException(`Order is already ${order.status}.`);
+    }
+
+    const rider = await this.dataSource.query(
+      `SELECT id, name, is_active FROM delivery_partners WHERE id = $1`, [partnerId]);
+    if (!rider.length || rider[0].is_active === false) {
+      throw new BadRequestException('That rider is not active.');
+    }
+
+    // reassignment → free the previously assigned rider
+    if (order.deliveryPartnerId && Number(order.deliveryPartnerId) !== partnerId) {
+      await this.dataSource.query(
+        `UPDATE delivery_partners SET is_available = true WHERE id = $1`,
+        [order.deliveryPartnerId]);
+    }
+
+    order.deliveryPartnerId = partnerId;
+    if (!['out_for_delivery', 'arriving_soon'].includes(order.status)) {
+      order.status = 'assigned_to_delivery';
+    }
+    const saved = await this.repo.save(order);
+
     await this.dataSource.query(
       `UPDATE delivery_partners SET is_available = false WHERE id = $1`, [partnerId]);
+    await this.historyRepo.save(this.historyRepo.create({
+      orderId,
+      status: 'assigned_to_delivery',
+      note: `Assigned to ${rider[0].name || 'rider #' + partnerId} by admin`,
+    }));
+
+    if (saved.userId) {
+      await this.dataSource.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app','🛵 Rider assigned',$3,true)`,
+        [saved.userId, orderId,
+         `Order ${saved.orderNumber}: ${rider[0].name || 'a rider'} is handling your delivery.`]);
+    }
     return this.findOneFull(orderId);
   }
 
@@ -481,17 +519,22 @@ export class OrdersService {
       const orderNumber = 'BT' + Date.now().toString(36).toUpperCase() +
         Math.random().toString(36).slice(2, 5).toUpperCase();
       const total = payable;
+      /* Mint the delivery OTP AT CREATION so the customer's tracking page always
+         shows it, and the rider's "delivered" handoff always has something to
+         match against. (Fixes the "invalid OTP" race from lazy minting.) */
+      const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
       const [order] = await mgr.query(
         `INSERT INTO orders (order_number, user_id, address_id, coupon_id, subtotal, discount,
              delivery_charge, tax, wallet_used, total, status, delivery_slot,
              delivery_lat, delivery_lng, delivery_address, eta_minutes, distance_km,
-             tip, delivery_instructions, cooking_note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18)
+             tip, delivery_instructions, cooking_note, delivery_otp)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          RETURNING *, order_number AS "orderNumber", user_id AS "userId", placed_at AS "placedAt"`,
         [orderNumber, dto.userId, dto.addressId ?? null, couponId, subtotal, discount,
          deliveryCharge, walletUsed, total, dto.deliverySlot ?? null,
          deliveryLat, deliveryLng, deliveryAddress, etaMinutes, distanceKm,
-         tip, dto.deliveryInstructions?.trim() || null, dto.cookingNote?.trim() || null]);
+         tip, dto.deliveryInstructions?.trim() || null, dto.cookingNote?.trim() || null,
+         deliveryOtp]);
       const orderId = Number(order.id);
 
       /* 7) items */
@@ -753,7 +796,12 @@ export class OrdersService {
 
   /* ── legacy admin create ── */
   async create(dto: CreateOrderDto) {
-    const order = this.repo.create({ ...dto, status: 'order_received' });
+    const order = this.repo.create({
+      ...dto,
+      status: 'order_received',
+      /* mint OTP at creation, same as checkout */
+      deliveryOtp: String(Math.floor(1000 + Math.random() * 9000)),
+    });
     const saved = await this.repo.save(order);
     await this.historyRepo.save(this.historyRepo.create({ orderId: saved.id, status: 'order_received', note: 'Order placed' }));
     return saved;
@@ -768,10 +816,20 @@ export class OrdersService {
   async updateStatus(id: number, dto: UpdateOrderStatusDto, isAdmin = false) {
     const order = await this.findOne(id);
 
+    /* An order cannot move to (or past) dispatch without a rider attached.
+       This is what prevents the "out_for_delivery with NULL rider" bug. */
+    if (['assigned_to_delivery', 'out_for_delivery', 'arriving_soon'].includes(dto.status)
+        && !order.deliveryPartnerId) {
+      throw new BadRequestException(
+        'Assign a delivery partner before moving this order out for delivery.');
+    }
+
     /* ── delivered gating (§4.5 OTP / §3.4 geofence) — admin key bypasses ── */
     if (dto.status === 'delivered' && !isAdmin) {
       if (order.deliveryOtp) {
-        if (!dto.otp || dto.otp.trim() !== order.deliveryOtp) {
+        const given = (dto.otp || '').trim();
+        const expected = String(order.deliveryOtp).trim();
+        if (!given || given !== expected) {
           throw new BadRequestException(
             'Wrong OTP. Ask the customer for the 4-digit code on their tracking page.');
         }
@@ -793,7 +851,8 @@ export class OrdersService {
     if (dto.status === 'order_confirmed' && !order.acceptedAt) order.acceptedAt = now;
     if (dto.status === 'out_for_delivery' && !order.pickedUpAt) {
       order.pickedUpAt = now;
-      /* mint the handoff OTP the moment the order leaves the kitchen (§4.5) */
+      /* OTP is already minted at order creation — nothing to do here.
+         (Safety net for any legacy row that somehow has none.) */
       if (!order.deliveryOtp) {
         order.deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
       }

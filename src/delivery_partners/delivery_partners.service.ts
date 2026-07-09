@@ -18,6 +18,21 @@ export class DeliveryPartnerService {
     return this.repo.find({ order: { id: 'DESC' } });
   }
 
+  /** Riders the admin can choose from when dispatching an order. */
+  async forAssignment() {
+    return this.dataSource.query(
+      `SELECT dp.id, dp.name, dp.mobile, dp.vehicle_no AS "vehicleNo",
+              dp.is_available AS "isAvailable",
+              COUNT(o.id) FILTER (
+                WHERE o.status NOT IN ('delivered','cancelled')
+              )::int AS "activeOrders"
+         FROM delivery_partners dp
+         LEFT JOIN orders o ON o.delivery_partner_id = dp.id
+        WHERE dp.is_active = true
+        GROUP BY dp.id
+        ORDER BY dp.is_available DESC, "activeOrders" ASC, dp.name ASC`);
+  }
+
   async findOne(id: number) {
     const item = await this.repo.findOne({ where: { id } });
     if (!item) throw new NotFoundException('DeliveryPartner not found');

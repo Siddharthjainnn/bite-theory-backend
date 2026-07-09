@@ -91,13 +91,21 @@ export class OrdersController {
     });
   }
 
-  /** Rider feed: unclaimed orders ready for pickup. */
+  /** DEPRECATED: self-accept disabled — always returns []. Kept so old rider clients don't 404. */
   @Get('available-for-riders') availableForRiders() { return this.service.availableForRiders(); }
 
-  /** Rider claims an order (first-come-first-served, atomic). */
-  @Post(':id/accept')
-  accept(@Param('id', ParseIntPipe) id: number, @Body() body: { partnerId: number }) {
-    return this.service.acceptOrder(id, Number(body.partnerId));
+  /**
+   * Admin assigns a SPECIFIC rider to an order (admin-only dispatch).
+   * Rider self-accept has been removed.
+   */
+  @Patch(':id/assign-rider')
+  assignRider(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { partnerId: number },
+    @Req() req: Request,
+  ) {
+    if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
+    return this.service.assignRider(id, Number(body.partnerId));
   }
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request & { authUserId?: number }) {
