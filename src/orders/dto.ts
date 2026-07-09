@@ -62,6 +62,11 @@ export class CancelOrderDto {
   @IsNumber() userId!: number;
 }
 
+/** Admin attaches / clears the "food being made" clip on a specific order. */
+export class SetPrepVideoDto {
+  @IsOptional() @IsString() @MaxLength(2048) prepVideoUrl?: string | null;
+}
+
 /** Legacy admin create (kept for admin panel compatibility). */
 export class CreateOrderDto {
   @IsString() @IsNotEmpty() orderNumber!: string;

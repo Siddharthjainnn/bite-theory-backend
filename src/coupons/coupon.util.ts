@@ -25,6 +25,13 @@ export function computeCouponDiscount(
   c: CouponRow | undefined | null,
   subtotal: number,
   usedByUser = 0,
+  /**
+   * True when an admin has personally gifted this coupon to the user
+   * (an unused row in coupon_assignments). An assigned coupon bypasses the
+   * global usage_limit and per_user_limit — the gift is the authorization —
+   * but still honours active/date/min-order checks.
+   */
+  assigned = false,
 ): { valid: boolean; discount: number; message: string } {
   if (!c) return { valid: false, discount: 0, message: 'Invalid coupon code' };
 
@@ -37,14 +44,16 @@ export function computeCouponDiscount(
   if (from && new Date(from) > now) return { valid: false, discount: 0, message: 'Coupon not active yet' };
   if (until && new Date(until) < now) return { valid: false, discount: 0, message: 'Coupon has expired' };
 
-  const limit = Number(c.usage_limit ?? c.usageLimit ?? 0);
-  const used = Number(c.used_count ?? c.usedCount ?? 0);
-  if (limit > 0 && used >= limit) return { valid: false, discount: 0, message: 'Coupon usage limit reached' };
+  if (!assigned) {
+    const limit = Number(c.usage_limit ?? c.usageLimit ?? 0);
+    const used = Number(c.used_count ?? c.usedCount ?? 0);
+    if (limit > 0 && used >= limit) return { valid: false, discount: 0, message: 'Coupon usage limit reached' };
 
-  // Per-user limit — default 1 (one-time redeem) when column is null.
-  const perUser = Number(c.per_user_limit ?? c.perUserLimit ?? 1);
-  if (perUser > 0 && usedByUser >= perUser) {
-    return { valid: false, discount: 0, message: 'You have already used this coupon' };
+    // Per-user limit — default 1 (one-time redeem) when column is null.
+    const perUser = Number(c.per_user_limit ?? c.perUserLimit ?? 1);
+    if (perUser > 0 && usedByUser >= perUser) {
+      return { valid: false, discount: 0, message: 'You have already used this coupon' };
+    }
   }
 
   const minOrder = Number(c.min_order ?? c.minOrder ?? 0);

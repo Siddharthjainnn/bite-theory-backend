@@ -20,6 +20,7 @@ import { UploadModule } from './upload/upload.module';
 import { UserModule } from './users/users.module';
 import { AddressModule } from './addresses/addresses.module';
 import { CouponModule } from './coupons/coupons.module';
+import { CouponAssignmentsModule } from './coupon_assignments/coupon_assignments.module';
 import { ReviewModule } from './reviews/reviews.module';
 import { ReferralModule } from './referrals/referrals.module';
 import { LoyaltyPointModule } from './loyalty_points/loyalty_points.module';
@@ -71,6 +72,7 @@ import { SettingsModule } from './settings/settings.module';
     UserModule,
     AddressModule,
     CouponModule,
+    CouponAssignmentsModule,
     ReviewModule,
     ReferralModule,
     LoyaltyPointModule,

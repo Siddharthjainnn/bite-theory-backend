@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { StoreSettings, WeeklyHours, DayHours } from './settings.entity';
 import { UpdateSettingsDto } from './update-settings.dto';
-import { LandingContent } from './settings.entity';
+import { LandingContent, InvoiceConfig } from './settings.entity';
 
 /** Fallback landing content — shown until the admin edits it in /admin. */
 export const DEFAULT_LANDING: LandingContent = {
@@ -28,6 +28,34 @@ export const DEFAULT_LANDING: LandingContent = {
   mapEmbedUrl: '',
   ctaHeading: 'Bhookh lagi? Order kar do \uD83D\uDE0B',
   ctaSubtitle: 'Fresh, hot and homestyle — delivered to your door in Indore.',
+};
+
+/** Fallback invoice/bill layout — used until the admin customizes it in /admin. */
+export const DEFAULT_INVOICE: InvoiceConfig = {
+  brandName: 'Bite Theory',
+  logoUrl: '',
+  tagline: 'Smart Food. Better Living.',
+  addressLine: 'Indore, Madhya Pradesh',
+  phone: '+91 90000 00000',
+  gstin: '',
+  fssai: '',
+  accentColor: '#2e7d32',
+  paper: 'thermal80',
+  showLogo: true,
+  showGstin: false,
+  showFssai: false,
+  showCustomer: true,
+  showItemsTable: true,
+  columns: { qty: true, unitPrice: true, lineTotal: true },
+  showTaxBreakup: true,
+  showPaymentMethod: true,
+  showQrNote: false,
+  headerNote: '',
+  footerNote: 'Thank you for ordering with us!',
+  thankYouNote: 'See you again soon 🍱',
+  chefTicketTitle: 'KITCHEN TICKET',
+  chefShowNotes: true,
+  autoPrintOnReady: false,
 };
 
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
@@ -77,6 +105,8 @@ export class SettingsService {
     if (!s.landingContent) {
       s.landingContent = DEFAULT_LANDING;
     }
+    // merge invoice defaults so newly-added keys are always present
+    s.invoiceConfig = { ...DEFAULT_INVOICE, ...(s.invoiceConfig || {}) };
     return s;
   }
 
