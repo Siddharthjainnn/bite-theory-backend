@@ -3,6 +3,32 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { StoreSettings, WeeklyHours, DayHours } from './settings.entity';
 import { UpdateSettingsDto } from './update-settings.dto';
+import { LandingContent } from './settings.entity';
+
+/** Fallback landing content — shown until the admin edits it in /admin. */
+export const DEFAULT_LANDING: LandingContent = {
+  logoUrl: '',
+  brandName: 'Bite Theory',
+  tagline1: 'Smart Food.',
+  tagline2: 'Better Living.',
+  heroSubtitle:
+    'Fresh, healthy, homestyle food made in Indore — served with that unmistakable Malwa warmth. From poha mornings to protein-packed thalis.',
+  heroBadge: '100% PURE VEG · INDORE KA APNA',
+  stat1Value: '4.8\u2605', stat1Label: '1,200+ ratings',
+  stat2Value: '25 min', stat2Label: 'avg delivery',
+  stat3Value: '100%', stat3Label: 'pure veg',
+  features: [
+    { icon: '\uD83C\uDFC6', title: '#1 in Indore', subtitle: 'most-loved veg kitchen' },
+    { icon: '\uD83D\uDEF5', title: 'Free Delivery', subtitle: 'within 5 km, over \u20B9199' },
+    { icon: '\uD83C\uDF31', title: 'Farm Fresh', subtitle: 'sourced daily, Malwa region' },
+    { icon: '\uD83D\uDC9A', title: '50k+ Orders', subtitle: 'served with love' },
+  ],
+  phone: '+91 90000 00000',
+  hoursLine: 'Open 8:00 AM \u2013 11:00 PM \u00B7 all days',
+  mapEmbedUrl: '',
+  ctaHeading: 'Bhookh lagi? Order kar do \uD83D\uDE0B',
+  ctaSubtitle: 'Fresh, hot and homestyle — delivered to your door in Indore.',
+};
 
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 const DAY_LABEL: Record<string, string> = {
@@ -47,6 +73,10 @@ export class SettingsService {
     s.freeDeliveryWithinKm = Number(s.freeDeliveryWithinKm ?? 2);
     s.riderBaseFare = Number(s.riderBaseFare ?? 20);
     s.riderPerKmPay = Number(s.riderPerKmPay ?? 5);
+    // seed default landing content once, so the site is never blank
+    if (!s.landingContent) {
+      s.landingContent = DEFAULT_LANDING;
+    }
     return s;
   }
 

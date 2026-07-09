@@ -3,6 +3,17 @@ import { Entity, Column, PrimaryColumn } from 'typeorm';
 export interface DayHours { open: string; close: string; closed: boolean }
 export type WeeklyHours = Record<'mon'|'tue'|'wed'|'thu'|'fri'|'sat'|'sun', DayHours>;
 export interface Holiday { date: string; note?: string }
+export interface LandingFeature { icon: string; title: string; subtitle: string }
+export interface LandingContent {
+  logoUrl: string; brandName: string;
+  tagline1: string; tagline2: string; heroSubtitle: string; heroBadge: string;
+  stat1Value: string; stat1Label: string;
+  stat2Value: string; stat2Label: string;
+  stat3Value: string; stat3Label: string;
+  features: LandingFeature[];
+  phone: string; hoursLine: string; mapEmbedUrl: string;
+  ctaHeading: string; ctaSubtitle: string;
+}
 
 @Entity({ name: 'store_settings' })
 export class StoreSettings {
@@ -70,6 +81,10 @@ export class StoreSettings {
 
   @Column({ type: 'numeric', name: 'rider_per_km_pay', default: 5 })
   riderPerKmPay: number;
+
+  /* ── desktop landing page content (admin-editable, audit: marketing site) ── */
+  @Column({ type: 'jsonb', name: 'landing_content', nullable: true })
+  landingContent: LandingContent | null;
 
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
