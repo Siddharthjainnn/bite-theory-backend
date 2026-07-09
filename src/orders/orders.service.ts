@@ -176,19 +176,62 @@ export class OrdersService {
       ? { lat: Number(cfg.storeLat), lng: Number(cfg.storeLng), address: cfg.storeAddress || null }
       : null;
 
-    /* live ETA: recompute from the rider's current position each poll,
-       instead of the frozen value stored at checkout */
+    /* live ETA: recompute each poll, but HONESTLY — the number must reflect
+       which leg the rider is actually on, not just the status flag.
+
+       Key insight: `out_for_delivery`/`arriving_soon` does NOT mean the rider
+       has left the restaurant. `picked_up_at` is the real signal. If it's null,
+       the rider is still heading to (or waiting at) the kitchen, so the ETA has
+       to include: reach-restaurant + remaining-prep + restaurant→home. Only
+       after pickup do we count down the short rider→home leg. */
     let etaMinutes = full.etaMinutes ?? null;
     const destLat = full.deliveryLat != null ? Number(full.deliveryLat) : null;
     const destLng = full.deliveryLng != null ? Number(full.deliveryLng) : null;
     const kmph = Number(cfg.avgRiderKmph) || 20;
-    if (destLat != null && destLng != null && partner?.lat != null && partner?.lng != null &&
-        ['out_for_delivery', 'arriving_soon'].includes(String(full.status))) {
-      const remainKm = haversineKm(Number(partner.lat), Number(partner.lng), destLat, destLng);
-      etaMinutes = Math.max(1, Math.round((remainKm / kmph) * 60));
-    } else if (destLat != null && destLng != null && store && !['delivered', 'cancelled'].includes(String(full.status))) {
-      const distKm = haversineKm(store.lat, store.lng, destLat, destLng);
-      etaMinutes = Math.round((Number(cfg.avgPrepMinutes) || 20) + (distKm / kmph) * 60);
+    const prepMin = Number(cfg.avgPrepMinutes) || 20;
+    const minsFromKm = (km: number) => (km / kmph) * 60;
+    const hasRider = partner?.lat != null && partner?.lng != null;
+    const pickedUp = full.pickedUpAt != null;
+    const terminal = ['delivered', 'cancelled'].includes(String(full.status));
+
+    if (destLat != null && destLng != null && !terminal) {
+      if (hasRider && pickedUp) {
+        /* LEG 2: rider has the food and is driving to the customer.
+           Count down purely on the rider's live position → home. */
+        const remainKm = haversineKm(Number(partner.lat), Number(partner.lng), destLat, destLng);
+        etaMinutes = Math.max(1, Math.round(minsFromKm(remainKm)));
+      } else if (store) {
+        /* LEG 1: food not yet picked up. Full journey estimate:
+           (rider→restaurant if we know where the rider is, else 0)
+           + remaining prep time
+           + restaurant→home drive. */
+        let toRestaurantMin = 0;
+        if (hasRider) {
+          const toStoreKm = haversineKm(Number(partner.lat), Number(partner.lng), store.lat, store.lng);
+          toRestaurantMin = minsFromKm(toStoreKm);
+        }
+
+        /* remaining prep = full prep minus however long we've already been
+           cooking (since the kitchen accepted, or since the order was placed).
+           Never negative, never more than the full prep window. */
+        const cookStart = full.acceptedAt ?? full.placedAt ?? null;
+        let prepRemaining = prepMin;
+        if (cookStart) {
+          const elapsedMin = (Date.now() - new Date(cookStart).getTime()) / 60000;
+          prepRemaining = Math.max(0, prepMin - elapsedMin);
+        }
+
+        const storeToHomeKm = haversineKm(store.lat, store.lng, destLat, destLng);
+        etaMinutes = Math.max(
+          1,
+          Math.round(toRestaurantMin + prepRemaining + minsFromKm(storeToHomeKm)),
+        );
+      } else if (hasRider) {
+        /* no store pin configured but we have a rider fix — best effort:
+           straight rider→home, plus prep if not yet picked up. */
+        const remainKm = haversineKm(Number(partner.lat), Number(partner.lng), destLat, destLng);
+        etaMinutes = Math.max(1, Math.round(minsFromKm(remainKm) + (pickedUp ? 0 : prepMin)));
+      }
     }
 
     return { ...full, etaMinutes, partner, store };
