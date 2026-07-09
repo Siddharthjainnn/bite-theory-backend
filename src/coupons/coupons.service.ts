@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Coupon } from './coupon.entity';
@@ -13,8 +13,13 @@ export class CouponService {
     private readonly repo: Repository<Coupon>,
   ) {}
 
+  /**
+   * Bug #45: was order:{id:'DESC'} → admin list showed newest first and the
+   * displayed "ID count" looked non-sequential. Ascending id gives a stable,
+   * incrementing sequence.
+   */
   findAll() {
-    return this.repo.find({ order: { id: 'DESC' } });
+    return this.repo.find({ order: { id: 'ASC' } });
   }
 
   /** Validate a coupon code for a given subtotal (no usage bump here). */
@@ -40,14 +45,39 @@ export class CouponService {
     return item;
   }
 
+  /**
+   * Bug #46 (root cause): normalize + sanity-check at creation so an admin can
+   * never save a coupon the customer then can't apply.
+   *  - code upper-cased & trimmed (validate() compares UPPER-to-UPPER anyway,
+   *    but storing it clean avoids surprises in the admin list)
+   *  - percentage discounts capped at 100 (a 150%-off coupon is nonsense)
+   *  - isActive defaults to true when omitted (a null is treated as active by
+   *    computeCouponDiscount, but making it explicit avoids ambiguity)
+   *  - reject validUntil <= validFrom
+   */
+  private normalize<T extends Partial<Coupon> & { discountType?: string; discountValue?: number }>(dto: T): T {
+    if (dto.code) dto.code = String(dto.code).trim().toUpperCase();
+    const type = (dto.discountType || 'percentage').toLowerCase();
+    if (type === 'percentage' && dto.discountValue != null && dto.discountValue > 100) {
+      throw new BadRequestException('Percentage discount cannot exceed 100%');
+    }
+    if (dto.validFrom && dto.validUntil && new Date(dto.validUntil) <= new Date(dto.validFrom)) {
+      throw new BadRequestException('validUntil must be after validFrom');
+    }
+    if ((dto as any).isActive == null) (dto as any).isActive = true;
+    return dto;
+  }
+
   create(dto: CreateCouponDto) {
-    const item = this.repo.create(dto as Partial<Coupon>);
+    const clean = this.normalize(dto as any);
+    const item = this.repo.create(clean as Partial<Coupon>);
     return this.repo.save(item);
   }
 
   async update(id: number, dto: UpdateCouponDto) {
     await this.findOne(id);
-    await this.repo.update(id, dto as Partial<Coupon>);
+    const clean = this.normalize(dto as any);
+    await this.repo.update(id, clean as Partial<Coupon>);
     return this.findOne(id);
   }
 

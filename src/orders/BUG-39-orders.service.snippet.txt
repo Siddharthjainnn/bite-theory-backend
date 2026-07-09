@@ -1,0 +1,46 @@
+BUG #39 — restrict admin from force-delivering an assigned order.
+FILE: src/orders/orders.service.ts  (inside async updateStatus)
+
+This is a huge file, so instead of pasting the whole thing, do ONE precise
+find-and-replace. In your editor, FIND this exact block (near line ~819):
+
+────────────────────────── FIND ──────────────────────────
+    /* An order cannot move to (or past) dispatch without a rider attached.
+       This is what prevents the "out_for_delivery with NULL rider" bug. */
+    if (['assigned_to_delivery', 'out_for_delivery', 'arriving_soon'].includes(dto.status)
+        && !order.deliveryPartnerId) {
+      throw new BadRequestException(
+        'Assign a delivery partner before moving this order out for delivery.');
+    }
+───────────────────────────────────────────────────────────
+
+REPLACE it with (same block, plus the new #39 guard right after it):
+
+──────────────────────── REPLACE ─────────────────────────
+    /* An order cannot move to (or past) dispatch without a rider attached.
+       This is what prevents the "out_for_delivery with NULL rider" bug. */
+    if (['assigned_to_delivery', 'out_for_delivery', 'arriving_soon'].includes(dto.status)
+        && !order.deliveryPartnerId) {
+      throw new BadRequestException(
+        'Assign a delivery partner before moving this order out for delivery.');
+    }
+
+    /* Bug #39: once a rider is assigned, forward progress toward delivery is
+       the rider's job. An admin may still cancel or drive the pre-assignment
+       lifecycle, but may NOT force an assigned order to out_for_delivery /
+       arriving_soon / delivered — the admin only gets notified on delivery. */
+    const riderOwnedStatuses = ['out_for_delivery', 'arriving_soon', 'delivered'];
+    if (isAdmin && order.deliveryPartnerId && riderOwnedStatuses.includes(dto.status)) {
+      throw new BadRequestException(
+        'This order is assigned to a delivery partner. The rider updates delivery ' +
+        'status from here — the admin will be notified when it is delivered.');
+    }
+───────────────────────────────────────────────────────────
+
+That's the only change needed. `BadRequestException` is already imported in this
+file, so nothing else to add.
+
+WHY WHOLE-FILE PASTE IS NOT PROVIDED HERE
+orders.service.ts is ~900 lines of your live checkout/payment/inventory
+transaction logic. Reproducing all of it by hand risks silently altering
+something unrelated. This single-block replace is safe and unambiguous.

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Product } from './product.entity';
@@ -15,6 +15,23 @@ export class ProductsService {
     @InjectRepository(Product)
     private readonly repo: Repository<Product>,
   ) {}
+
+  /**
+   * Bug #19: an offer must be a deliberate, valid discount. Normalize the
+   * offerPrice so the storefront can never show a phantom "% OFF":
+   *  - offerPrice <= 0  → treated as "no offer" (null)
+   *  - offerPrice >= price → rejected (an offer can't be >= the base price)
+   */
+  private normalizeOffer(dto: { price?: number; offerPrice?: number | null }, basePrice?: number) {
+    const price = dto.price ?? basePrice;
+    if (dto.offerPrice != null) {
+      if (dto.offerPrice <= 0) {
+        dto.offerPrice = null;
+      } else if (price != null && dto.offerPrice >= price) {
+        throw new BadRequestException('Offer price must be lower than the base price');
+      }
+    }
+  }
 
   // GET /products — same shape as before, PLUS live stock status so the
   // storefront can show "Sold out" / "Only few left!" instead of items
@@ -43,6 +60,7 @@ export class ProductsService {
 
   // POST /products
   create(dto: CreateProductDto) {
+    this.normalizeOffer(dto as any);
     const product = this.repo.create({
       ...dto,
       slug: slugify(dto.name),
@@ -53,6 +71,7 @@ export class ProductsService {
   // PATCH /products/:id
   async update(id: number, dto: UpdateProductDto) {
     const product = await this.findOne(id);
+    this.normalizeOffer(dto as any, Number(product.price));
     Object.assign(product, dto);
     if (dto.name) product.slug = slugify(dto.name);
     return this.repo.save(product);

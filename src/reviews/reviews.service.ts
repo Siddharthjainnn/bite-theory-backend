@@ -16,35 +16,43 @@ export class ReviewService {
    * List reviews.
    *  - ?userId=    → "My Reviews" page: joined with product name/image.
    *  - ?productId= → reviews shown on a product page (joined with reviewer name).
+   *
+   * Bug #40: the admin list showed the raw autoincrement id, which has real gaps
+   * (deleted/rolled-back rows) so the numbering looked like it was "skipping".
+   * We now order ascending and expose a gap-free "displayId" (1,2,3…) via
+   * ROW_NUMBER() for the admin table to render. The real "id" is still returned
+   * for edit/delete actions.
    */
   findAll(filters: { userId?: number; productId?: number } = {}) {
     if (filters.userId) {
       return this.repo.query(
-        `SELECT r.id, r.product_id AS "productId", r.order_id AS "orderId",
+        `SELECT ROW_NUMBER() OVER (ORDER BY r.id ASC) AS "displayId",
+                r.id, r.product_id AS "productId", r.order_id AS "orderId",
                 r.rating, r.comment, r.created_at AS "createdAt",
                 r.image1, r.image2, r.image3,
                 p.name AS "productName", p.image AS "productImage", p.slug AS "productSlug"
            FROM reviews r
            LEFT JOIN products p ON p.id = r.product_id
           WHERE r.user_id = $1
-          ORDER BY r.id DESC`,
+          ORDER BY r.id ASC`,
         [filters.userId],
       );
     }
     if (filters.productId) {
       return this.repo.query(
-        `SELECT r.id, r.rating, r.comment, r.created_at AS "createdAt",
+        `SELECT ROW_NUMBER() OVER (ORDER BY r.id ASC) AS "displayId",
+                r.id, r.rating, r.comment, r.created_at AS "createdAt",
                 r.image1, r.image2, r.image3,
                 TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) AS "userName",
                 u.profile_image AS "userImage"
            FROM reviews r
            LEFT JOIN users u ON u.id = r.user_id
           WHERE r.product_id = $1
-          ORDER BY r.id DESC`,
+          ORDER BY r.id ASC`,
         [filters.productId],
       );
     }
-    return this.repo.find({ order: { id: 'DESC' } });
+    return this.repo.find({ order: { id: 'ASC' } });
   }
 
   async findOne(id: number) {

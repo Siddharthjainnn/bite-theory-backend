@@ -12,8 +12,15 @@ export class UserService {
     private readonly repo: Repository<User>,
   ) {}
 
+  /**
+   * Bug #5: was order:{id:'DESC'} → customer list showed newest first, so
+   * "customer #1" appeared at the bottom. Ascending gives #1, #2, #3 … at the
+   * top as QA expects. (If the admin UI wants newest-first as a *view* option,
+   * do that with a client-side sort toggle, not by reversing the canonical
+   * id sequence.)
+   */
   findAll() {
-    return this.repo.find({ order: { id: 'DESC' } });
+    return this.repo.find({ order: { id: 'ASC' } });
   }
 
   async findOne(id: number) {
