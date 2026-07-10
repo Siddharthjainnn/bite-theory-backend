@@ -94,10 +94,11 @@ export class UpdateOrderStatusDto {
   @IsOptional() @IsString() note?: string;
   /* C1: rider identity. A non-admin status change must carry the id of the
      rider assigned to this order — strangers don't know it, so they can't
-     drive or cancel other people's orders. */
-  @IsOptional() @IsNumber() deliveryPartnerId?: number;
+     drive or cancel other people's orders. @Type coerces the value the rider
+     app sends (a string from localStorage) into a number before validation. */
+  @IsOptional() @Type(() => Number) @IsNumber() deliveryPartnerId?: number;
   /* delivered handoff proof (§4.5 / §3.4) */
   @IsOptional() @IsString() @MaxLength(4) otp?: string;
-  @IsOptional() @IsNumber() riderLat?: number;
-  @IsOptional() @IsNumber() riderLng?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() riderLat?: number;
+  @IsOptional() @Type(() => Number) @IsNumber() riderLng?: number;
 }
