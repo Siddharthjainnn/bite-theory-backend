@@ -357,6 +357,12 @@ export class OrdersService {
       }
     }
 
+    /* C3: block payment for an address we can't zone-check (see checkout). */
+    if ((Number(cfg.deliveryRadiusKm) || 0) > 0 && (dLat == null || dLng == null)) {
+      throw new BadRequestException(
+        'We couldn\'t pin your delivery location. Please edit the address and drop a pin on the map.');
+    }
+
     const { deliveryCharge, distanceKm, etaMinutes } =
       this.deliveryPricing(cfg, subtotal - discount, dLat, dLng);
     const tip = Math.max(0, Math.min(Number(input.tipAmount) || 0, 500)); // cap ₹500
@@ -571,6 +577,15 @@ export class OrdersService {
         deliveryLng = deliveryLng ?? (ad.longitude != null ? Number(ad.longitude) : null);
       }
       if (!dto.addressId && !deliveryAddress) throw new BadRequestException('Delivery address required');
+
+      /* C3: if we enforce a delivery zone but this address has no coordinates,
+         we can't verify it's deliverable — refuse rather than let the customer
+         pay for a place we may not serve. (deliveryPricing silently skips the
+         radius check when lat/lng are null, which is the loophole this closes.) */
+      if ((Number(cfg.deliveryRadiusKm) || 0) > 0 && (deliveryLat == null || deliveryLng == null)) {
+        throw new BadRequestException(
+          'We couldn\'t pin your delivery location. Please edit the address and drop a pin on the map.');
+      }
 
       /* 5b) distance: SAME formula as priceCart (radius reject, tiered charge, ETA) */
       const dp = this.deliveryPricing(cfg, subtotal - discount, deliveryLat, deliveryLng);
@@ -871,6 +886,98 @@ export class OrdersService {
           [order.userId, walletUsed, `Refund for cancelled order ${order.orderNumber}`, orderId]);
       }
     }
+
+    /* ── C2: reverse everything checkout consumed, so a cancel can't be
+       farmed for free stock/coupons/referral cash. All steps are guarded by
+       a single "reversal already done" marker so a double-cancel can't
+       double-restore. */
+    const reversed = await this.dataSource.query(
+      `SELECT 1 FROM order_status_history
+        WHERE order_id = $1 AND note = 'cancel-reversal-done' LIMIT 1`, [orderId]);
+    if (!reversed.length) {
+      // 3) restore inventory for every line, and re-activate products that
+      //    were auto-hidden when they sold out.
+      const items = await this.dataSource.query(
+        `SELECT product_id, quantity FROM order_items WHERE order_id = $1`, [orderId]);
+      for (const it of items) {
+        await this.dataSource.query(
+          `UPDATE inventory
+              SET quantity = COALESCE(quantity,0) + $1,
+                  stock_status = CASE
+                    WHEN COALESCE(quantity,0) + $1 <= 0 THEN 'out_of_stock'
+                    WHEN COALESCE(quantity,0) + $1 <= COALESCE(low_threshold, 5) THEN 'low'
+                    ELSE 'in_stock' END,
+                  updated_at = now()
+            WHERE product_id = $2`, [Number(it.quantity), it.product_id]);
+        // if it was hidden for being sold out and now has stock, show it again
+        await this.dataSource.query(
+          `UPDATE products p SET status = 'active', updated_at = now()
+            FROM inventory i
+           WHERE p.id = $1 AND i.product_id = p.id
+             AND p.status = 'inactive' AND COALESCE(i.quantity,0) > 0`, [it.product_id]);
+      }
+
+      // 4) give back the coupon: drop its redemption row and decrement usage.
+      if (order.couponId) {
+        const del = await this.dataSource.query(
+          `DELETE FROM coupon_redemptions WHERE order_id = $1 RETURNING id`, [orderId]);
+        if (del.length) {
+          await this.dataSource.query(
+            `UPDATE coupons SET used_count = GREATEST(COALESCE(used_count,0) - 1, 0)
+              WHERE id = $1`, [order.couponId]);
+        }
+      }
+
+      // 5) reverse the referral reward if THIS order triggered it — claw back
+      //    the ₹50 and re-open the referral so it can convert on a real order.
+      const refRewards = await this.dataSource.query(
+        `SELECT user_id, amount FROM wallet_transactions
+          WHERE order_id = $1 AND type = 'credit'
+            AND reason LIKE 'Referral reward%'`, [orderId]);
+      for (const rr of refRewards) {
+        await this.dataSource.query(
+          `UPDATE users SET wallet_balance = GREATEST(COALESCE(wallet_balance,0) - $1, 0),
+                            updated_at = now() WHERE id = $2`,
+          [Number(rr.amount), rr.user_id]);
+        await this.dataSource.query(
+          `INSERT INTO wallet_transactions (user_id, type, amount, reason, order_id)
+           VALUES ($1,'debit',$2,'Referral reward reversed — friend''s first order was cancelled',$3)`,
+          [rr.user_id, Number(rr.amount), orderId]);
+      }
+      await this.dataSource.query(
+        `UPDATE referrals SET is_converted = false, rewarded = false, reward_amount = 0
+          WHERE referred_user_id = $1 AND rewarded = true
+            AND EXISTS (SELECT 1 FROM wallet_transactions
+                        WHERE order_id = $2 AND reason LIKE 'Referral reward%')`,
+        [order.userId, orderId]);
+
+      // 6) reverse loyalty points earned on this order (and recompute tier).
+      const lp = await this.dataSource.query(
+        `SELECT COALESCE(SUM(points),0)::int AS pts FROM loyalty_points
+          WHERE order_id = $1 AND type = 'earn'`, [orderId]);
+      const earned = Number(lp[0]?.pts || 0);
+      if (earned > 0) {
+        await this.dataSource.query(
+          `INSERT INTO loyalty_points (user_id, points, type, reason, order_id)
+           VALUES ($1, $2, 'redeem', $3, $4)`,
+          [order.userId, -earned, `Reversed — order ${order.orderNumber} cancelled`, orderId]);
+        await this.dataSource.query(
+          `UPDATE users SET loyalty_points = GREATEST(COALESCE(loyalty_points,0) - $1, 0)
+            WHERE id = $2`, [earned, order.userId]);
+        await this.dataSource.query(
+          `UPDATE users SET loyalty_level = CASE
+             WHEN loyalty_points >= 1000 THEN 'platinum'::loyalty_tier
+             WHEN loyalty_points >= 500  THEN 'gold'::loyalty_tier
+             WHEN loyalty_points >= 200  THEN 'silver'::loyalty_tier
+             ELSE 'bronze'::loyalty_tier END
+           WHERE id = $1`, [order.userId]);
+      }
+
+      // mark done so a second cancel can't restore twice
+      await this.dataSource.query(
+        `INSERT INTO order_status_history (order_id, status, note)
+         VALUES ($1, 'cancelled', 'cancel-reversal-done')`, [orderId]);
+    }
   }
 
   /* ── legacy admin create ── */
@@ -894,6 +1001,22 @@ export class OrdersService {
 
   async updateStatus(id: number, dto: UpdateOrderStatusDto, isAdmin = false) {
     const order = await this.findOne(id);
+
+    /* ── C1: authorize non-admin status changes ──────────────────────────
+       Admin (server key) may drive any order. Everyone else (the rider app)
+       must prove they're the rider assigned to THIS order by passing its
+       deliveryPartnerId. Without this, the route was open — any stranger
+       could cancel or fast-forward anyone's order. An order with no rider
+       assigned can only be moved by admin. */
+    if (!isAdmin) {
+      if (!order.deliveryPartnerId) {
+        throw new ForbiddenException(
+          'This order has no assigned rider. Only staff can change its status.');
+      }
+      if (Number(dto.deliveryPartnerId) !== Number(order.deliveryPartnerId)) {
+        throw new ForbiddenException('You are not the rider assigned to this order.');
+      }
+    }
 
     /* An order cannot move to (or past) dispatch without a rider attached.
        This is what prevents the "out_for_delivery with NULL rider" bug. */
