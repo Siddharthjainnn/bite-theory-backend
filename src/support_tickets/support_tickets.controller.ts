@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe,
+  Controller, Get, Post, Patch, Delete, Param, Body, ParseIntPipe, Query,
 } from '@nestjs/common';
 import { SupportTicketService } from './support_tickets.service';
 import { CreateSupportTicketDto } from './create-support-ticket.dto';
@@ -10,8 +10,8 @@ export class SupportTicketController {
   constructor(private readonly service: SupportTicketService) {}
 
   @Get()
-  findAll() {
-    return this.service.findAll();
+  findAll(@Query('userId') userId?: string) {
+    return this.service.findAll(userId ? Number(userId) : undefined);
   }
 
   @Get(':id')

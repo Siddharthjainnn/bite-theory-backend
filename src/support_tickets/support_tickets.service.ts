@@ -12,7 +12,12 @@ export class SupportTicketService {
     private readonly repo: Repository<SupportTicket>,
   ) {}
 
-  findAll() {
+  /* #27: admin gets ALL tickets; #53: a user gets only their own when a
+     userId is supplied. */
+  findAll(userId?: number) {
+    if (userId) {
+      return this.repo.find({ where: { userId } as any, order: { id: 'DESC' } });
+    }
     return this.repo.find({ order: { id: 'DESC' } });
   }
 
@@ -23,7 +28,9 @@ export class SupportTicketService {
   }
 
   create(dto: CreateSupportTicketDto) {
-    const item = this.repo.create(dto as Partial<SupportTicket>);
+    /* #53: a freshly raised ticket is 'open' by default so it surfaces to
+       admin immediately. */
+    const item = this.repo.create({ ...dto, status: dto.status || 'open' } as Partial<SupportTicket>);
     return this.repo.save(item);
   }
 
