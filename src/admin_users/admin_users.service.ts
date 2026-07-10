@@ -73,9 +73,35 @@ export class AdminUserService {
     return item;
   }
 
-  create(dto: CreateAdminUserDto) {
-    const item = this.repo.create(dto as Partial<AdminUser>);
-    return this.repo.save(item);
+  async create(dto: CreateAdminUserDto) {
+    /* Bug #32: hash a plain password (if given) so the new admin can actually
+       log in, and validate the essentials so "create failed" gives a clear
+       reason instead of a DB error. */
+    if (!dto.email?.trim()) throw new BadRequestException('Email is required');
+    const dupe = await this.repo
+      .createQueryBuilder('a')
+      .where('LOWER(a.email) = LOWER(:email)', { email: dto.email.trim() })
+      .getCount();
+    if (dupe > 0) throw new BadRequestException('An admin with this email already exists');
+
+    const data: Partial<AdminUser> = {
+      roleId: dto.roleId,
+      name: dto.name,
+      email: dto.email.trim(),
+      isActive: dto.isActive ?? true,
+      avatar: dto.avatar,
+    };
+    if (dto.password) {
+      data.passwordHash = await bcrypt.hash(dto.password, 10);
+    } else if (dto.passwordHash) {
+      // treat an incoming plain value as a password to hash, not a stored hash
+      data.passwordHash = await bcrypt.hash(dto.passwordHash, 10);
+    } else {
+      throw new BadRequestException('A password of at least 8 characters is required');
+    }
+    const item = this.repo.create(data);
+    const saved = await this.repo.save(item);
+    return { id: saved.id, name: saved.name, email: saved.email, roleId: saved.roleId, isActive: saved.isActive };
   }
 
   async update(id: number, dto: UpdateAdminUserDto) {

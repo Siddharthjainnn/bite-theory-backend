@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Category } from './category.entity';
@@ -48,6 +48,15 @@ export class CategoriesService {
   // DELETE /categories/:id
   async remove(id: number) {
     const cat = await this.findOne(id);
+    /* Bug #50: deleting a category that still has products throws a raw
+       foreign-key error the admin sees as "unable to delete". Check first and
+       give a clear, actionable message. */
+    const [{ count }] = await this.repo.manager.query(
+      `SELECT COUNT(*)::int AS count FROM products WHERE category_id = $1`, [id]);
+    if (Number(count) > 0) {
+      throw new BadRequestException(
+        `This category has ${count} product(s). Move or delete those products first, then delete the category.`);
+    }
     await this.repo.remove(cat);
     return { deleted: true, id };
   }
