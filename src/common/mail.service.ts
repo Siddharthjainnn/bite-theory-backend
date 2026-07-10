@@ -63,7 +63,7 @@ export class MailService {
               <td style="padding:8px;text-align:right;font-weight:bold;border-top:1px dashed #ccc">₹${o.total}</td></tr>
         </table>
         ${o.deliveryAddress ? `<p style="color:#666;font-size:13px">📍 ${o.deliveryAddress}</p>` : ''}
-        <p style="color:#999;font-size:12px">Bite Theory — thanks for ordering!</p>
+        <p style="color:#999;font-size:12px">Bites Theory — thanks for ordering!</p>
       </div>`;
   }
 
@@ -72,7 +72,7 @@ export class MailService {
       <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto">
         <h2 style="color:#0D3B2E">${title}</h2>
         <p>Order <b>${orderNumber}</b>: ${body}</p>
-        <p style="color:#999;font-size:12px">Bite Theory</p>
+        <p style="color:#999;font-size:12px">Bites Theory</p>
       </div>`;
   }
 }

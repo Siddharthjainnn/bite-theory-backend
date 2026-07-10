@@ -8,7 +8,8 @@ import { LandingContent, InvoiceConfig } from './settings.entity';
 /** Fallback landing content — shown until the admin edits it in /admin. */
 export const DEFAULT_LANDING: LandingContent = {
   logoUrl: '',
-  brandName: 'Bite Theory',
+  brandName: 'Bites Theory',
+  city: 'Indore',
   tagline1: 'Smart Food.',
   tagline2: 'Better Living.',
   heroSubtitle:
@@ -32,7 +33,7 @@ export const DEFAULT_LANDING: LandingContent = {
 
 /** Fallback invoice/bill layout — used until the admin customizes it in /admin. */
 export const DEFAULT_INVOICE: InvoiceConfig = {
-  brandName: 'Bite Theory',
+  brandName: 'Bites Theory',
   logoUrl: '',
   tagline: 'Smart Food. Better Living.',
   addressLine: 'Indore, Madhya Pradesh',

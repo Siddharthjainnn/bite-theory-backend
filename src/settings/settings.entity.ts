@@ -44,7 +44,7 @@ export interface InvoiceConfig {
 }
 
 export interface LandingContent {
-  logoUrl: string; brandName: string;
+  logoUrl: string; brandName: string; city: string;
   tagline1: string; tagline2: string; heroSubtitle: string; heroBadge: string;
   stat1Value: string; stat1Label: string;
   stat2Value: string; stat2Label: string;
