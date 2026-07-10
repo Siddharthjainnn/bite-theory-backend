@@ -748,7 +748,7 @@ export class OrdersService {
       const u = await mgr.query(`SELECT email FROM users WHERE id = $1`, [dto.userId]);
       this.mail.send(
         u[0]?.email,
-        `Order ${orderNumber} confirmed — Bite Theory`,
+        `Order ${orderNumber} confirmed — Bites Theory`,
         this.mail.orderPlacedHtml({ orderNumber, total, items: lines, deliveryAddress }),
       );
 
@@ -1008,7 +1008,7 @@ export class OrdersService {
           `SELECT email FROM users WHERE id = $1`, [saved.userId]);
         this.mail.send(
           u[0]?.email,
-          `${m.title} — Bite Theory`,
+          `${m.title} — Bites Theory`,
           this.mail.statusHtml(saved.orderNumber || `#${id}`, m.title, m.body),
         );
       }
