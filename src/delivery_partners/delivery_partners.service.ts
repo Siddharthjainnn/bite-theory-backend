@@ -102,9 +102,12 @@ export class DeliveryPartnerService {
       `SELECT COALESCE(SUM(total),0)::numeric AS amount, COUNT(*)::int AS deliveries
          FROM rider_earnings
         WHERE delivery_partner_id = $1 AND created_at >= date_trunc('week', now())`, [id]);
-    /* COD cash in hand = COD totals delivered − deposits recorded by admin */
+    /* COD cash in hand = actual CASH the rider collected − deposits.
+       Bug #35: an order can be part-paid by wallet, so the rider only
+       collects (total − wallet_used) in cash, not the full total. Counting
+       the full total overstated the COD cash and mixed wallet money in. */
     const [cod] = await this.dataSource.query(
-      `SELECT COALESCE(SUM(o.total),0)::numeric AS collected
+      `SELECT COALESCE(SUM(GREATEST(o.total - COALESCE(o.wallet_used,0), 0)),0)::numeric AS collected
          FROM orders o
          JOIN payments p ON p.order_id = o.id AND p.method = 'cod'
         WHERE o.delivery_partner_id = $1 AND o.status = 'delivered'`, [id]);
@@ -114,7 +117,13 @@ export class DeliveryPartnerService {
     const history = await this.dataSource.query(
       `SELECT e.order_id AS "orderId", o.order_number AS "orderNumber",
               e.base_fare AS "baseFare", e.distance_pay AS "distancePay",
-              e.tip, e.total, e.created_at AS "createdAt"
+              e.tip, e.total, e.created_at AS "createdAt",
+              /* Bug #64/#65: show the real per-order value + how it was paid,
+                 so every delivery no longer displays the same flat payout. */
+              o.total AS "orderValue",
+              COALESCE(o.wallet_used,0) AS "walletUsed",
+              (SELECT method FROM payments WHERE order_id = o.id ORDER BY id DESC LIMIT 1) AS "paymentMethod",
+              GREATEST(o.total - COALESCE(o.wallet_used,0), 0) AS "cashToCollect"
          FROM rider_earnings e
          LEFT JOIN orders o ON o.id = e.order_id
         WHERE e.delivery_partner_id = $1
