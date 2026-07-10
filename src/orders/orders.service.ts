@@ -833,7 +833,7 @@ export class OrdersService {
         'This order is already being prepared and can no longer be cancelled. Please contact support.',
       );
     }
-    return this.updateStatus(orderId, { status: 'cancelled', note: 'Cancelled by customer' });
+    return this.updateStatus(orderId, { status: 'cancelled', note: 'Cancelled by customer' }, false, true);
   }
 
   /**
@@ -999,16 +999,17 @@ export class OrdersService {
     return this.repo.save(order);
   }
 
-  async updateStatus(id: number, dto: UpdateOrderStatusDto, isAdmin = false) {
+  async updateStatus(id: number, dto: UpdateOrderStatusDto, isAdmin = false, trustedCaller = false) {
     const order = await this.findOne(id);
 
     /* ── C1: authorize non-admin status changes ──────────────────────────
-       Admin (server key) may drive any order. Everyone else (the rider app)
-       must prove they're the rider assigned to THIS order by passing its
-       deliveryPartnerId. Without this, the route was open — any stranger
-       could cancel or fast-forward anyone's order. An order with no rider
-       assigned can only be moved by admin. */
-    if (!isAdmin) {
+       Admin (server key) may drive any order. The rider app must prove it's
+       the rider assigned to THIS order via deliveryPartnerId. `trustedCaller`
+       is for internal transitions that were ALREADY authorized upstream —
+       e.g. cancelByCustomer, which has its own ownership + status checks — so
+       they aren't wrongly blocked by the rider rule. The public HTTP /status
+       route never sets trustedCaller, so strangers are still locked out. */
+    if (!isAdmin && !trustedCaller) {
       if (!order.deliveryPartnerId) {
         throw new ForbiddenException(
           'This order has no assigned rider. Only staff can change its status.');
