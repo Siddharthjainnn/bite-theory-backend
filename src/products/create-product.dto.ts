@@ -42,4 +42,5 @@ export class CreateProductDto {
   @IsOptional() @IsBoolean() isTodaysSpecial?: boolean;
   @IsOptional() @IsBoolean() isVeg?: boolean;
   @IsOptional() @IsString() specialTag?: string;
+  @IsOptional() @IsBoolean() isSpinWheel?: boolean;
 }

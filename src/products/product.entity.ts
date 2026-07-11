@@ -65,4 +65,8 @@ export class Product {
 
   @Column({ type: 'varchar', name: 'special_tag', length: 50, nullable: true })
   specialTag: string;
+
+  // Spin the Thali: admin-curated wheel pool (false = not in the wheel)
+  @Column({ type: 'boolean', name: 'is_spin_wheel', default: false, nullable: true })
+  isSpinWheel: boolean;
 }
