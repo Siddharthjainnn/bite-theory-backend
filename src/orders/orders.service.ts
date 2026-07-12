@@ -13,6 +13,9 @@ import { RazorpayService } from './razorpay.service';
 import { haversineKm } from '../common/geo.util';
 import { MailService } from '../common/mail.service';
 import { SettingsService } from '../settings/settings.service';
+import { ThaliService } from '../thali/thali.service';
+import { ScratchService } from '../scratch/scratch.service';
+import { FlashService } from '../flash/flash.service';
 
 @Injectable()
 export class OrdersService {
@@ -23,6 +26,9 @@ export class OrdersService {
     private readonly razorpay: RazorpayService,
     private readonly mail: MailService,
     private readonly settings: SettingsService,
+    private readonly thali: ThaliService,
+    private readonly scratch: ScratchService,
+    private readonly flash: FlashService,
   ) {}
 
   async findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -129,12 +135,42 @@ export class OrdersService {
     return order;
   }
 
+  /** Healthy-day streak: consecutive days (IST) whose delivered orders sum
+      to >= 25g protein, computed from product macros. Used by StreakCard. */
+  async streak(userId: number) {
+    const THRESHOLD = 25; // grams of protein that make a day "healthy"
+    const rows = await this.dataSource.query(
+      `SELECT DATE(o.placed_at AT TIME ZONE 'Asia/Kolkata') AS day,
+              COALESCE(SUM(COALESCE(p.protein, 0) * oi.quantity), 0) AS protein
+         FROM orders o
+         JOIN order_items oi ON oi.order_id = o.id
+         LEFT JOIN products p ON p.id = oi.product_id
+        WHERE o.user_id = $1 AND o.status = 'delivered'
+        GROUP BY 1 ORDER BY 1 DESC LIMIT 90`, [userId]);
+    const qualifying = new Set(
+      rows.filter((r: { protein: string }) => Number(r.protein) >= THRESHOLD)
+          .map((r: { day: string | Date }) => new Date(r.day).toISOString().slice(0, 10)));
+    // walk back from today (IST); allow the streak to start yesterday
+    const istNow = new Date(Date.now() + 5.5 * 3600 * 1000);
+    let cursor = new Date(istNow.toISOString().slice(0, 10));
+    if (!qualifying.has(cursor.toISOString().slice(0, 10))) {
+      cursor = new Date(cursor.getTime() - 86400000); // today not yet earned
+    }
+    let streak = 0;
+    while (qualifying.has(cursor.toISOString().slice(0, 10))) {
+      streak += 1;
+      cursor = new Date(cursor.getTime() - 86400000);
+    }
+    return { streak, threshold: THRESHOLD, healthyDays: qualifying.size };
+  }
+
   /** Order + items in one call (customer order detail). */
   async findOneFull(id: number) {
     const order = await this.findOne(id);
     const items = await this.dataSource.query(
       `SELECT id, product_id AS "productId", product_name AS "productName",
-              unit_price AS "unitPrice", quantity, line_total AS "lineTotal"
+              unit_price AS "unitPrice", quantity, line_total AS "lineTotal",
+              thali_config AS "thaliConfig"
          FROM order_items WHERE order_id = $1 ORDER BY id`, [id]);
     const history = await this.getHistory(id);
     return { ...order, items, history };
@@ -247,7 +283,7 @@ export class OrdersService {
     if (!this.razorpay.isConfigured) {
       throw new BadRequestException('Online payment is not available right now.');
     }
-    if (!dto.items?.length) throw new BadRequestException('Cart is empty');
+    if (!dto.items?.length && !dto.thaliItems?.length) throw new BadRequestException('Cart is empty');
     {
       const storeStatus = await this.settings.status();
       if (!storeStatus.open) {
@@ -258,6 +294,7 @@ export class OrdersService {
     const priced = await this.priceCart({
       userId: dto.userId,
       items: dto.items,
+      thaliItems: dto.thaliItems,
       couponCode: dto.couponCode,
       useWallet: dto.useWallet,
       tipAmount: dto.tipAmount,
@@ -301,22 +338,28 @@ export class OrdersService {
    */
   private async priceCart(input: {
     userId: number; items: { productId: number; quantity: number }[];
+    thaliItems?: { templateId: number; selections: { optionId: number; qty: number }[] }[];
     couponCode?: string; useWallet?: boolean; tipAmount?: number;
     addressId?: number; deliveryLat?: number | null; deliveryLng?: number | null;
   }) {
-    const ids = input.items.map((i) => i.productId);
+    const ids = (input.items || []).map((i) => i.productId);
     const products = await this.dataSource.query(
       `SELECT id, name, price, offer_price FROM products
         WHERE id = ANY($1) AND status = 'active'`, [ids]);
     const byId = new Map<number, any>(products.map((p: any) => [Number(p.id), p]));
 
     let subtotal = 0;
-    for (const i of input.items) {
+    for (const i of input.items || []) {
       const p = byId.get(Number(i.productId));
       if (!p) throw new BadRequestException(`Product ${i.productId} unavailable`);
       const price = Number(p.offer_price) > 0 && Number(p.offer_price) < Number(p.price)
         ? Number(p.offer_price) : Number(p.price);
       subtotal += price * i.quantity;
+    }
+    // customized thalis — same server-side validation as checkout
+    for (const ti of input.thaliItems || []) {
+      const pc = await this.thali.priceCheck(Number(ti.templateId), ti.selections || []);
+      subtotal += pc.total;
     }
 
     let discount = 0;
@@ -334,6 +377,9 @@ export class OrdersService {
       if (!result.valid) throw new BadRequestException(result.message);
       discount = result.discount;
     }
+
+    const flashDeal = await this.flash.current();
+    if (flashDeal) discount += Math.round(subtotal * Number(flashDeal.discountPct)) / 100;
 
     const cfg = await this.settings.get();
     if (subtotal < cfg.minOrderAmount) {
@@ -428,7 +474,7 @@ export class OrdersService {
    * order + items + history + payment, bump coupon usage, award points.
    */
   async checkout(dto: CheckoutDto, opts: { skipSignatureCheck?: boolean } = {}) {
-    if (!dto.items?.length) throw new BadRequestException('Cart is empty');
+    if (!dto.items?.length && !dto.thaliItems?.length) throw new BadRequestException('Cart is empty');
     {
       const storeStatus = await this.settings.status();
       if (!storeStatus.open) {
@@ -469,14 +515,14 @@ export class OrdersService {
       }
 
       /* 1) price items from DB — never trust client prices */
-      const ids = dto.items.map((i) => i.productId);
+      const ids = (dto.items || []).map((i) => i.productId);
       const products = await mgr.query(
         `SELECT id, name, price, offer_price FROM products
           WHERE id = ANY($1) AND status = 'active'`, [ids]);
       const byId = new Map<number, any>(products.map((p: any) => [Number(p.id), p]));
 
       let subtotal = 0;
-      const lines = dto.items.map((i) => {
+      const lines = (dto.items || []).map((i) => {
         const p = byId.get(Number(i.productId));
         if (!p) throw new BadRequestException(`Product ${i.productId} unavailable`);
         const price = Number(p.offer_price) > 0 && Number(p.offer_price) < Number(p.price)
@@ -485,6 +531,29 @@ export class OrdersService {
         subtotal += lineTotal;
         return { productId: Number(p.id), productName: p.name, unitPrice: price, quantity: i.quantity, lineTotal };
       });
+
+      /* 1t) customized thalis — price & validate via ThaliService (portion
+         model: max_qty per option, section portion limits, availability).
+         The client's thali total is never trusted; the kitchen snapshot is
+         built here from the SERVER's breakdown. */
+      const thaliLines: { name: string; total: number; config: unknown }[] = [];
+      for (const ti of dto.thaliItems || []) {
+        const pc = await this.thali.priceCheck(Number(ti.templateId), ti.selections || []);
+        subtotal += pc.total;
+        thaliLines.push({
+          name: pc.templateName,
+          total: pc.total,
+          config: {
+            templateId: pc.templateId,
+            basePrice: pc.basePrice,
+            total: pc.total,
+            items: pc.breakdown.map((b) => ({
+              section: b.section, name: b.name, qty: b.qty,
+              unitPrice: b.unitPrice, lineTotal: b.lineTotal,
+            })),
+          },
+        });
+      }
 
       /* 1b) stock check — reject before charging, never oversell.
          FOR UPDATE locks the rows so two simultaneous checkouts can't
@@ -527,6 +596,11 @@ export class OrdersService {
         discount = result.discount;
         couponId = Number(rows[0].id);
       }
+
+      /* 2b) flash deal — server re-checks the window AT ORDER TIME, so an
+         expired deal can never apply even if the client still shows it */
+      const deal = await this.flash.current();
+      if (deal) discount += Math.round(subtotal * Number(deal.discountPct)) / 100;
 
       /* 3) delivery charge + rider tip */
       const cfg = await this.settings.get();
@@ -631,6 +705,12 @@ export class OrdersService {
            VALUES ($1,$2,$3,$4,$5,$6)`,
           [orderId, l.productId, l.productName, l.unitPrice, l.quantity, l.lineTotal]);
       }
+      for (const tl of thaliLines) {
+        await mgr.query(
+          `INSERT INTO order_items (order_id, product_id, product_name, unit_price, quantity, line_total, thali_config)
+           VALUES ($1,NULL,$2,$3,1,$3,$4)`,
+          [orderId, tl.name, tl.total, JSON.stringify(tl.config)]);
+      }
 
       /* 8) status history */
       await mgr.query(
@@ -721,6 +801,34 @@ export class OrdersService {
             `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
              VALUES ($1,$2,'in_app','🎉 You earned ₹${REFERRAL_REWARD}!','Your friend just placed their first order. ₹${REFERRAL_REWARD} has been added to your wallet.',true)`,
             [referrerId, orderId]);
+
+          /* 13b) milestone: 3 converted referrals → one-time ₹100 bonus.
+             Idempotent via the unique wallet-transaction reason. */
+          const MILESTONE_N = 3;
+          const MILESTONE_BONUS = 100;
+          const MILESTONE_REASON = 'Referral milestone — 3 dost aa gaye! 🎁';
+          const conv = await mgr.query(
+            `SELECT COUNT(*)::int AS n FROM referrals
+              WHERE referrer_id = $1 AND is_converted = true`, [referrerId]);
+          if (Number(conv[0].n) >= MILESTONE_N) {
+            const already = await mgr.query(
+              `SELECT 1 FROM wallet_transactions
+                WHERE user_id = $1 AND reason = $2 LIMIT 1`,
+              [referrerId, MILESTONE_REASON]);
+            if (!already.length) {
+              await mgr.query(
+                `UPDATE users SET wallet_balance = COALESCE(wallet_balance,0) + $1, updated_at = now()
+                  WHERE id = $2`, [MILESTONE_BONUS, referrerId]);
+              await mgr.query(
+                `INSERT INTO wallet_transactions (user_id, type, amount, reason, order_id)
+                 VALUES ($1,'credit',$2,$3,$4)`,
+                [referrerId, MILESTONE_BONUS, MILESTONE_REASON, orderId]);
+              await mgr.query(
+                `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+                 VALUES ($1,$2,'in_app','🏆 3 referrals complete!','Bonus ₹100 wallet mein aa gaya. Aise hi dosto ko khilao! 🎁',true)`,
+                [referrerId, orderId]);
+            }
+          }
         }
       }
 
@@ -1101,6 +1209,10 @@ export class OrdersService {
       await this.refundOnCancel(id);
     }
     await this.historyRepo.save(this.historyRepo.create({ orderId: id, status: dto.status, note: dto.note }));
+    if (dto.status === 'delivered') {
+      // scratch card minted at delivery — reward decided server-side, once per order
+      this.scratch.createForOrder(id, Number(order.userId)).catch(() => {});
+    }
 
     /* COD: collected on the doorstep → mark the payment row paid */
     if (dto.status === 'delivered') {

@@ -33,6 +33,10 @@ export class CheckoutDto {
   @IsOptional() @IsString() @MaxLength(300) deliveryInstructions?: string;
   @IsOptional() @IsString() @MaxLength(300) cookingNote?: string;
 
+  // Customized thalis (portion model) — priced & validated server-side
+  @IsOptional() @IsArray()
+  thaliItems?: { templateId: number; selections: { optionId: number; qty: number }[] }[];
+
   // Razorpay (only sent when paymentMethod === 'online', after the popup succeeds)
   @IsOptional() @IsString() razorpayOrderId?: string;
   @IsOptional() @IsString() razorpayPaymentId?: string;
@@ -44,6 +48,8 @@ export class CreatePaymentDto {
   @IsNumber() userId!: number;
   @IsArray() @ValidateNested({ each: true }) @Type(() => CheckoutItemDto)
   items!: CheckoutItemDto[];
+  @IsOptional() @IsArray()
+  thaliItems?: { templateId: number; selections: { optionId: number; qty: number }[] }[];
   @IsOptional() @IsNumber() addressId?: number;
   @IsOptional() @IsString() couponCode?: string;
   @IsOptional() @IsBoolean() useWallet?: boolean;

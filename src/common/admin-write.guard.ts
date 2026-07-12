@@ -45,6 +45,7 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/admin-users\/seed$/ },      // one-time bootstrap (secret-gated)
     { method: 'POST', path: /^\/referrals\/claim$/ },       // new user enters a friend's code
     { method: 'POST', path: /^\/thali-templates\/[^/]+\/price-check$/ }, // customer thali price validation (read-effect)
+    { method: 'POST', path: /^\/scratch-cards\/[^/]+\/scratch$/ },       // customer reveals their scratch card
   ];
 
   canActivate(context: ExecutionContext): boolean {

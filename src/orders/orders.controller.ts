@@ -135,6 +135,11 @@ export class OrdersController {
     return this.service.trackOwned(id, this.isAdmin(req), uid ?? null);
   }
 
+  @Get('streak/:userId')
+  streak(@Param('userId', ParseIntPipe) userId: number) {
+    return this.service.streak(userId);
+  }
+
   /** Customer checkout — items priced server-side, atomic. */
   @UseGuards(UserAuthGuard)
   @Post('checkout')

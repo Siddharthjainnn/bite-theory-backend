@@ -40,6 +40,8 @@ import { AdminUserModule } from './admin_users/admin_users.module';
 import { AuditLogModule } from './audit_logs/audit_logs.module';
 import { SettingsModule } from './settings/settings.module';
 import { ThaliModule } from './thali/thali.module';
+import { ScratchModule } from './scratch/scratch.module';
+import { FlashModule } from './flash/flash.module';
 
 @Module({
   imports: [
@@ -94,6 +96,8 @@ import { ThaliModule } from './thali/thali.module';
     UploadModule,
     SettingsModule,
     ThaliModule,
+    ScratchModule,
+    FlashModule,
   ],
   controllers: [AppController],
   providers: [

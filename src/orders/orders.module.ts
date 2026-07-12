@@ -7,9 +7,12 @@ import { OrdersController } from './orders.controller';
 import { RazorpayService } from './razorpay.service';
 import { MailService } from '../common/mail.service';
 import { SettingsModule } from '../settings/settings.module';
+import { ThaliModule } from '../thali/thali.module';
+import { ScratchModule } from '../scratch/scratch.module';
+import { FlashModule } from '../flash/flash.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule],
+  imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule, ThaliModule, ScratchModule, FlashModule],
   controllers: [OrdersController],
   providers: [OrdersService, RazorpayService, MailService],
 })
