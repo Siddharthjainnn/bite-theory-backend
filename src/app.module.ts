@@ -39,6 +39,7 @@ import { PermissionModule } from './permissions/permissions.module';
 import { AdminUserModule } from './admin_users/admin_users.module';
 import { AuditLogModule } from './audit_logs/audit_logs.module';
 import { SettingsModule } from './settings/settings.module';
+import { ThaliModule } from './thali/thali.module';
 
 @Module({
   imports: [
@@ -92,6 +93,7 @@ import { SettingsModule } from './settings/settings.module';
     AuditLogModule,
     UploadModule,
     SettingsModule,
+    ThaliModule,
   ],
   controllers: [AppController],
   providers: [
