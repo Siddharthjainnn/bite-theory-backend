@@ -1,49 +1,75 @@
 import {
   Controller, Get, Post, Patch, Delete, Param, Body, Query, ParseIntPipe,
+  Req, UseGuards, BadRequestException,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { FavoriteService } from './favorites.service';
 import { CreateFavoriteDto } from './create-favorite.dto';
 import { UpdateFavoriteDto } from './update-favorite.dto';
+import { UserAuthGuard } from '../common/user-auth.guard';
+import { requireAdmin, requireSelfOrAdmin } from '../common/req-auth.util';
 
+/**
+ * P0 SECURITY PATCH — favorites reveal user behavior; toggling as another
+ * user was possible before.
+ *   GET  /favorites?userId=X     → self or admin
+ *   GET  /favorites/ids?userId=X → self or admin
+ *   POST /favorites/toggle       → signed-in user; userId forced from token
+ *   raw CRUD (:id)               → admin
+ */
 @Controller('favorites')
 export class FavoriteController {
   constructor(private readonly service: FavoriteService) {}
 
-  /** GET /favorites?userId=12 → favorites joined with product info */
   @Get()
-  findAll(@Query('userId') userId?: string) {
-    return this.service.findAll(userId ? Number(userId) : undefined);
+  findAll(@Req() req: Request, @Query('userId') userId?: string) {
+    if (!userId) { requireAdmin(req); return this.service.findAll(undefined); }
+    requireSelfOrAdmin(req, Number(userId));
+    return this.service.findAll(Number(userId));
   }
 
-  /** GET /favorites/ids?userId=12 → [3, 8, 21] for painting hearts */
   @Get('ids')
-  ids(@Query('userId', ParseIntPipe) userId: number) {
+  ids(@Req() req: Request, @Query('userId', ParseIntPipe) userId: number) {
+    requireSelfOrAdmin(req, userId);
     return this.service.idsForUser(userId);
   }
 
-  /** POST /favorites/toggle { userId, productId } → { favorited: bool } */
+  @UseGuards(UserAuthGuard)
   @Post('toggle')
-  toggle(@Body() body: { userId: number; productId: number }) {
-    return this.service.toggle(Number(body.userId), Number(body.productId));
+  toggle(
+    @Body() body: { userId: number; productId: number },
+    @Req() req: Request & { authUserId?: number },
+  ) {
+    const userId = req.authUserId ?? Number(body.userId);
+    if (!userId) throw new BadRequestException('userId is required.');
+    return this.service.toggle(userId, Number(body.productId));
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseIntPipe) id: number) {
+  findOne(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    requireAdmin(req);
     return this.service.findOne(id);
   }
 
   @Post()
-  create(@Body() dto: CreateFavoriteDto) {
+  create(@Body() dto: CreateFavoriteDto, @Req() req: Request) {
+    requireAdmin(req);
     return this.service.create(dto);
   }
 
   @Patch(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateFavoriteDto) {
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateFavoriteDto,
+    @Req() req: Request,
+  ) {
+    requireAdmin(req);
     return this.service.update(id, dto);
   }
 
   @Delete(':id')
-  remove(@Param('id', ParseIntPipe) id: number) {
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    requireAdmin(req);
     return this.service.remove(id);
   }
 }

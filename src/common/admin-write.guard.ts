@@ -38,8 +38,6 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/reviews$/ },                // write a review
     { method: 'DELETE', path: /^\/reviews\/[^/]+$/ },       // delete my review
     { method: 'POST', path: /^\/coupons\/validate$/ },      // check a coupon code
-    { method: 'POST', path: /^\/users$/ },                  // upsert on login
-    { method: 'PATCH', path: /^\/users\/[^/]+$/ },          // save my profile/mobile
     { method: 'POST', path: /^\/support-tickets$/ },        // contact support
     { method: 'POST', path: /^\/admin-users\/login$/ },     // admin email+password login
     { method: 'POST', path: /^\/admin-users\/seed$/ },      // one-time bootstrap (secret-gated)

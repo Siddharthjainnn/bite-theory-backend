@@ -6,6 +6,7 @@ import { Request } from 'express';
 import { OrdersService } from './orders.service';
 import { RazorpayService } from './razorpay.service';
 import { UserAuthGuard, verifyUserToken } from '../common/user-auth.guard';
+import { requireSelfOrAdmin } from '../common/req-auth.util';
 import {
   CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
   SetPrepVideoDto,
@@ -126,7 +127,15 @@ export class OrdersController {
       : verifyUserToken((req.headers['x-user-token'] as string) || '');
     return this.service.findOneFullOwned(id, this.isAdmin(req), uid ?? null);
   }
-  @Get(':id/history') getHistory(@Param('id', ParseIntPipe) id: number) { return this.service.getHistory(id); }
+  /** P0 patch: history is ownership-checked like :id and :id/track. */
+  @Get(':id/history')
+  async getHistory(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    if (!this.isAdmin(req)) {
+      const order = await this.service.findOne(id);
+      requireSelfOrAdmin(req, Number((order as any).userId));
+    }
+    return this.service.getHistory(id);
+  }
   @Get(':id/track')
   track(@Param('id', ParseIntPipe) id: number, @Req() req: Request & { authUserId?: number }) {
     const uid = this.isAdmin(req)
@@ -135,8 +144,10 @@ export class OrdersController {
     return this.service.trackOwned(id, this.isAdmin(req), uid ?? null);
   }
 
+  /** P0 patch: your protein streak is your data — self or admin only. */
   @Get('streak/:userId')
-  streak(@Param('userId', ParseIntPipe) userId: number) {
+  streak(@Param('userId', ParseIntPipe) userId: number, @Req() req: Request) {
+    requireSelfOrAdmin(req, userId);
     return this.service.streak(userId);
   }
 
