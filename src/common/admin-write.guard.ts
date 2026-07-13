@@ -2,6 +2,7 @@ import {
   CanActivate, ExecutionContext, Injectable, UnauthorizedException,
 } from '@nestjs/common';
 import { Request } from 'express';
+import { verifyAdminJwt } from './admin-auth.guard';
 
 /**
  * Global write-protection guard.
@@ -70,12 +71,17 @@ export class AdminWriteGuard implements CanActivate {
         'Admin API key not configured on the server.',
       );
     }
-    const header =
-      (req.headers['x-admin-key'] as string) ||
-      (req.headers['authorization'] as string)?.replace(/^Bearer\s+/i, '') ||
-      '';
+    const bearer = (req.headers['authorization'] as string)?.replace(/^Bearer\s+/i, '') || '';
+    const header = (req.headers['x-admin-key'] as string) || bearer || '';
 
+    // 1) shared master key (break-glass) still works
     if (header && header === expected) return true;
+
+    // 2) a valid per-admin JWT is also accepted for writes. This is what
+    //    allows the browser to stop carrying the master key: once every admin
+    //    logs in and sends a Bearer token, remove the key from the frontend.
+    if (bearer && verifyAdminJwt(bearer)) return true;
+
     throw new UnauthorizedException('Admin key required for this operation.');
   }
 }
