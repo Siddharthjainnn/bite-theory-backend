@@ -5,6 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { AdminUser } from './admin-user.entity';
+import { signAdminJwt } from '../common/admin-auth.guard';
 import { CreateAdminUserDto } from './create-admin-user.dto';
 import { UpdateAdminUserDto } from './update-admin-user.dto';
 
@@ -37,10 +38,33 @@ export class AdminUserService {
     }
     const ok = await bcrypt.compare(password, admin.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid email or password');
+
+    // resolve role name (lower_snake) for role-based checks
+    let roleName = '';
+    if (admin.roleId) {
+      const r = await this.repo.query(
+        `SELECT name FROM roles WHERE id = $1 LIMIT 1`, [admin.roleId]);
+      roleName = (r?.[0]?.name || '').toString().trim().toLowerCase().replace(/\s+/g, '_');
+    }
+
+    // Per-admin JWT (P1). Carries id + role so the backend can enforce
+    // role-based access without the shared master key.
+    const token = signAdminJwt({
+      sub: Number(admin.id),
+      name: admin.name,
+      email: admin.email,
+      role: roleName,
+      roleId: admin.roleId ?? null,
+    });
+
     return {
       ok: true,
-      admin: { id: admin.id, name: admin.name, email: admin.email, avatar: admin.avatar },
-      adminKey: process.env.ADMIN_API_KEY || '',
+      admin: {
+        id: admin.id, name: admin.name, email: admin.email,
+        avatar: admin.avatar, role: roleName, roleId: admin.roleId ?? null,
+      },
+      token,                                 // ← use this as Authorization: Bearer
+      adminKey: process.env.ADMIN_API_KEY || '', // ← kept for backwards compat (break-glass)
     };
   }
 
