@@ -207,6 +207,20 @@ export class SettingsService {
 
     const openM = this.toMinutes(today.open);
     const closeM = this.toMinutes(today.close);
+
+    // Guard: a misconfigured day where close <= open (e.g. 10:00→10:00) has an
+    // EMPTY open window and would keep the store closed all day with a
+    // confusing "opens at 10:00 today" that never arrives. Treat it as an
+    // explicit closed-today and point at the next real opening instead.
+    if (closeM <= openM) {
+      const next = nextOpen(1);
+      return {
+        open: false, reason: 'outside_hours',
+        message: `We're closed today. ${next ? `We open at ${next}.` : ''}`.trim(),
+        nextOpenAt: next, todayHours: today,
+      };
+    }
+
     if (now.minutes >= openM && now.minutes < closeM) {
       return { open: true, reason: 'open', message: '', nextOpenAt: null, todayHours: today };
     }
