@@ -107,11 +107,12 @@ export class DeliveryPartnerService {
        Bug #35: an order can be part-paid by wallet, so the rider only
        collects (total − wallet_used) in cash, not the full total. Counting
        the full total overstated the COD cash and mixed wallet money in. */
+    /* Single source of truth: rider_cash_ledger. Only ACTUAL cash lands here —
+       an order paid by doorstep UPI QR flips to method='online' and never writes
+       a ledger row, so it correctly adds ₹0 to the rider's cash. */
     const [cod] = await this.dataSource.query(
-      `SELECT COALESCE(SUM(GREATEST(o.total - COALESCE(o.wallet_used,0), 0)),0)::numeric AS collected
-         FROM orders o
-         JOIN payments p ON p.order_id = o.id AND p.method = 'cod'
-        WHERE o.delivery_partner_id = $1 AND o.status = 'delivered'`, [id]);
+      `SELECT COALESCE(SUM(amount),0)::numeric AS collected
+         FROM rider_cash_ledger WHERE rider_id = $1 AND kind = 'collect'`, [id]);
     const [dep] = await this.dataSource.query(
       `SELECT COALESCE(SUM(amount),0)::numeric AS deposited
          FROM rider_cash_deposits WHERE delivery_partner_id = $1`, [id]);
@@ -129,14 +130,86 @@ export class DeliveryPartnerService {
          LEFT JOIN orders o ON o.id = e.order_id
         WHERE e.delivery_partner_id = $1
         ORDER BY e.created_at DESC LIMIT 30`, [id]);
+    const cashInHand = Math.max(0, Number(cod.collected) - Number(dep.deposited));
+    const cap = DeliveryPartnerService.cashCap();
     return {
       today: { amount: Number(today.amount), deliveries: today.deliveries },
       week: { amount: Number(week.amount), deliveries: week.deliveries },
-      cashInHand: Math.max(0, Number(cod.collected) - Number(dep.deposited)),
+      cashInHand,
       codCollected: Number(cod.collected),
       codDeposited: Number(dep.deposited),
+      /* The rider needs to SEE the wall coming, not hit it mid-shift. */
+      cashCap: cap,
+      cashCapReached: cashInHand >= cap,
+      cashHeadroom: Math.max(0, cap - cashInHand),
       history,
     };
+  }
+
+  /** ₹ a rider may hold before we stop giving them COD orders. */
+  static cashCap(): number {
+    const n = Number(process.env.RIDER_CASH_CAP);
+    return Number.isFinite(n) && n > 0 ? n : 3000;
+  }
+
+  /** Undeposited cash for one rider. Used by the assignment cap. */
+  async cashInHand(riderId: number): Promise<number> {
+    const [c] = await this.dataSource.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS v
+         FROM rider_cash_ledger WHERE rider_id = $1 AND kind = 'collect'`, [riderId]);
+    const [d] = await this.dataSource.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric AS v
+         FROM rider_cash_deposits WHERE delivery_partner_id = $1`, [riderId]);
+    return Math.max(0, Number(c.v) - Number(d.v));
+  }
+
+  /**
+   * Owner's morning screen. Who is holding my money, and how long have they
+   * been holding it? Sorted worst-first, so the problem rider is always row one.
+   */
+  async reconciliation() {
+    const cap = DeliveryPartnerService.cashCap();
+    const rows = await this.dataSource.query(
+      `SELECT dp.id, dp.name, dp.mobile, dp.is_active AS "isActive",
+              COALESCE(l.collected, 0)::numeric  AS collected,
+              COALESCE(d.deposited, 0)::numeric  AS deposited,
+              GREATEST(COALESCE(l.collected,0) - COALESCE(d.deposited,0), 0)::numeric AS "cashInHand",
+              l.orders_count                      AS "codOrders",
+              d.last_deposit_at                   AS "lastDepositAt",
+              l.oldest_unsettled                  AS "oldestCashAt"
+         FROM delivery_partners dp
+         LEFT JOIN (
+           SELECT rider_id,
+                  SUM(amount)      AS collected,
+                  COUNT(*)::int    AS orders_count,
+                  MIN(created_at)  AS oldest_unsettled
+             FROM rider_cash_ledger WHERE kind = 'collect' GROUP BY rider_id
+         ) l ON l.rider_id = dp.id
+         LEFT JOIN (
+           SELECT delivery_partner_id,
+                  SUM(amount)      AS deposited,
+                  MAX(created_at)  AS last_deposit_at
+             FROM rider_cash_deposits GROUP BY delivery_partner_id
+         ) d ON d.delivery_partner_id = dp.id
+        ORDER BY "cashInHand" DESC`);
+
+    return rows.map((r: any) => {
+      const cash = Number(r.cashInHand);
+      const days = r.lastDepositAt
+        ? Math.floor((Date.now() - new Date(r.lastDepositAt).getTime()) / 86400000)
+        : null;
+      return {
+        ...r,
+        collected: Number(r.collected),
+        deposited: Number(r.deposited),
+        cashInHand: cash,
+        cashCap: cap,
+        blocked: cash >= cap,
+        daysSinceDeposit: days,
+        /* A rider sitting on cash for days is the signal, not the total. */
+        risk: cash >= cap ? 'blocked' : (days !== null && days >= 3) || cash >= cap * 0.7 ? 'watch' : 'ok',
+      };
+    });
   }
 
   /* §4.3 admin records a cash deposit (route is admin-key protected) */

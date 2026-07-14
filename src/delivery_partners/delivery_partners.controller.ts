@@ -28,6 +28,16 @@ export class DeliveryPartnerController {
   }
 
   /** Admin dispatch picker: active riders + availability + current load. */
+  /**
+   * Owner's morning screen: who is holding my money, and for how long.
+   * Sorted worst-first — the problem rider is always row one.
+   */
+  @UseGuards(AdminAuthGuard)
+  @Get('reconciliation')
+  reconciliation() {
+    return this.service.reconciliation();
+  }
+
   @UseGuards(AdminAuthGuard)
   @Get('for-assignment')
   forAssignment() {

@@ -17,6 +17,7 @@ import { ThaliService } from '../thali/thali.service';
 import { ScratchService } from '../scratch/scratch.service';
 import { FlashService } from '../flash/flash.service';
 import { assertTransition, assertRiderMaySet } from './order-status.machine';
+import { DeliveryPartnerService } from '../delivery_partners/delivery_partners.service';
 
 @Injectable()
 export class OrdersService {
@@ -30,6 +31,7 @@ export class OrdersService {
     private readonly thali: ThaliService,
     private readonly scratch: ScratchService,
     private readonly flash: FlashService,
+    private readonly partners: DeliveryPartnerService,
   ) {}
 
   async findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -38,8 +40,37 @@ export class OrdersService {
     if (filters.deliveryPartnerId) qb.andWhere('o.delivery_partner_id = :pid', { pid: filters.deliveryPartnerId });
     if (filters.active) qb.andWhere(`o.status NOT IN ('delivered','cancelled')`);
     const rows = await qb.getMany();
+
     /* riders must never see the handoff OTP — only the customer gets it (§4.5) */
-    if (filters.deliveryPartnerId) rows.forEach((r) => { (r as any).deliveryOtp = null; });
+    if (filters.deliveryPartnerId) {
+      rows.forEach((r) => { (r as any).deliveryOtp = null; });
+
+      /* A rider standing at the door needs to know two things this payload
+         didn't carry: is this cash, and how much? Attach the live payment
+         state so the app can show "collect ₹420" vs "already paid". */
+      if (rows.length) {
+        const ids = rows.map((r) => r.id);
+        const pays = await this.dataSource.query(
+          `SELECT order_id, method, status FROM payments WHERE order_id = ANY($1)`, [ids]);
+        const byOrder = new Map<number, any>(
+          pays.map((p: any) => [Number(p.order_id), p]));
+
+        const qrs = await this.dataSource.query(
+          `SELECT order_id FROM order_qr_payments
+            WHERE order_id = ANY($1) AND status = 'active' AND close_by > now()`, [ids]);
+        const qrOpen = new Set<number>(qrs.map((q: any) => Number(q.order_id)));
+
+        rows.forEach((r: any) => {
+          const p = byOrder.get(Number(r.id));
+          const owed = Math.max(Number(r.total) - Number(r.walletUsed || 0), 0);
+          r.paymentMethod = p?.method ?? null;
+          r.paymentStatus = p?.status ?? null;
+          // Cash the rider must physically collect. Zero once paid (incl. by QR).
+          r.cashToCollect = (p?.method === 'cod' && p?.status === 'pending') ? owed : 0;
+          r.qrOpen = qrOpen.has(Number(r.id));
+        });
+      }
+    }
     return rows;
   }
 
@@ -76,6 +107,29 @@ export class OrdersService {
       `SELECT id, name, is_active FROM delivery_partners WHERE id = $1`, [partnerId]);
     if (!rider.length || rider[0].is_active === false) {
       throw new BadRequestException('That rider is not active.');
+    }
+
+    /* ── CASH CAP ────────────────────────────────────────────────────────
+       A rider already holding a pile of your undeposited cash must not be
+       handed another cash order. This is the control that actually forces the
+       money back — reports alone never do.
+
+       It only applies to COD. A prepaid order carries no cash risk, so a
+       capped-out rider can still deliver those and keep earning. Otherwise you
+       punish the rider for a problem they can fix by depositing.
+
+       Admin can override with `force` (see controller) for genuine edge cases. */
+    const cod = await this.dataSource.query(
+      `SELECT 1 FROM payments
+        WHERE order_id = $1 AND method = 'cod' AND status = 'pending' LIMIT 1`, [orderId]);
+    if (cod.length) {
+      const cash = await this.partners.cashInHand(partnerId);
+      const cap = DeliveryPartnerService.cashCap();
+      if (cash >= cap) {
+        throw new BadRequestException(
+          `${rider[0].name} is holding ₹${cash.toFixed(0)} in undeposited cash (cap ₹${cap}). ` +
+          `Take their deposit, or assign a rider with room. They can still take prepaid orders.`);
+      }
     }
 
     // reassignment → free the previously assigned rider
@@ -889,6 +943,17 @@ export class OrdersService {
    */
   async handleRazorpayWebhook(event: any) {
     try {
+      /* Doorstep QR paid — flip cod -> online and let the rider go. */
+      if (event?.event === 'qr_code.credited') {
+        const p = event?.payload?.payment?.entity;
+        const q = event?.payload?.qr_code?.entity;
+        const orderId = Number(p?.notes?.orderId ?? q?.notes?.orderId ?? 0);
+        if (!orderId || !q?.id) return { ok: true, ignored: 'qr without orderId' };
+        return await this.settleQrPayment(
+          orderId, String(q.id), p?.id ? String(p.id) : null, Number(p?.amount ?? 0),
+        );
+      }
+
       if (event?.event !== 'payment.captured') return { ok: true, ignored: event?.event };
       const payment = event?.payload?.payment?.entity;
       const paymentId: string = payment?.id;
@@ -1169,6 +1234,18 @@ export class OrdersService {
         'Assign a delivery partner before moving this order out for delivery.');
     }
 
+    /* Don't let the rider take cash while the customer is mid-scan. Without
+       this, both happen and the customer pays twice. */
+    if (dto.status === 'delivered' && !isAdmin) {
+      const liveQr = await this.dataSource.query(
+        `SELECT 1 FROM order_qr_payments
+          WHERE order_id = $1 AND status = 'active' AND close_by > now() LIMIT 1`, [id]);
+      if (liveQr.length) {
+        throw new BadRequestException(
+          'A UPI QR is open for this order. Wait for the payment to land, or cancel the QR to take cash instead.');
+      }
+    }
+
     /* ── delivered gating (§4.5 OTP / §3.4 geofence) — admin key bypasses ── */
     if (dto.status === 'delivered' && !isAdmin) {
       if (order.deliveryOtp) {
@@ -1248,11 +1325,28 @@ export class OrdersService {
       this.scratch.createForOrder(id, Number(order.userId)).catch(() => {});
     }
 
-    /* COD: collected on the doorstep → mark the payment row paid */
+    /* COD: collected on the doorstep → mark the payment row paid.
+       If the customer paid by QR, the row is already method='online'/'paid', so
+       this UPDATE matches nothing and the rider is correctly credited with ZERO
+       cash. Cash-in-hand only moves when actual cash actually moved. */
     if (dto.status === 'delivered') {
-      await this.dataSource.query(
+      const cash = await this.dataSource.query(
         `UPDATE payments SET status = 'paid'
-          WHERE order_id = $1 AND method = 'cod' AND status = 'pending'`, [id]);
+          WHERE order_id = $1 AND method = 'cod' AND status = 'pending'
+        RETURNING amount`, [id]);
+
+      if (cash.length && order.deliveryPartnerId) {
+        await this.dataSource.query(
+          `INSERT INTO rider_cash_ledger (rider_id, order_id, kind, amount, note)
+           VALUES ($1,$2,'collect',$3,$4)
+           ON CONFLICT (order_id) DO NOTHING`,
+          [order.deliveryPartnerId, id, Number(cash[0].amount),
+           `Cash collected for ${order.orderNumber || '#' + id}`]);
+      }
+
+      // Any QR still hanging open is now moot — close it so it can't be paid
+      // after the fact.
+      this.cancelDoorstepQr(id).catch(() => {});
     }
 
     /* friendly in-app notification for the customer */
@@ -1288,6 +1382,219 @@ export class OrdersService {
 
   getHistory(orderId: number) {
     return this.historyRepo.find({ where: { orderId }, order: { createdAt: 'ASC' } });
+  }
+
+  /* ═══════════════ DOORSTEP UPI QR — pay online at the door ═══════════════
+     The rider shows a QR for the EXACT amount owed. The customer scans with any
+     UPI app. Razorpay's `qr_code.credited` webhook flips the payment from cod to
+     online, automatically. The rider never touches cash, so their cash-in-hand
+     never moves. */
+
+  /** Rupees the customer still owes at the door (wallet already deducted). */
+  private cashToCollect(order: Order): number {
+    return Math.max(Number(order.total) - Number(order.walletUsed || 0), 0);
+  }
+
+  /** The single open COD payment row for this order, or null. */
+  private async pendingCodPayment(orderId: number) {
+    const rows = await this.dataSource.query(
+      `SELECT id, amount, status, method FROM payments
+        WHERE order_id = $1 AND method = 'cod' AND status = 'pending' LIMIT 1`,
+      [orderId]);
+    return rows[0] || null;
+  }
+
+  /**
+   * Rider taps "Customer wants to pay online" → mint a QR.
+   *
+   * Safe by construction:
+   *  - amount is computed SERVER-side from the order; the rider never sends it
+   *  - fixed_amount:true → Razorpay rejects any other amount
+   *  - single_use → the QR dies after one payment; a screenshot is worthless
+   *  - a partial unique index means at most ONE active QR per order can exist,
+   *    so a double-tap returns the SAME QR instead of minting a second payable one
+   */
+  async createDoorstepQr(orderId: number, riderId: number | null) {
+    const order = await this.findOne(orderId);
+
+    if (order.status === 'cancelled') {
+      throw new BadRequestException('This order is cancelled.');
+    }
+    const cod = await this.pendingCodPayment(orderId);
+    if (!cod) {
+      throw new BadRequestException(
+        'Nothing to collect — this order is already paid.');
+    }
+
+    // Re-use a live QR rather than minting another one.
+    const live = await this.dataSource.query(
+      `SELECT razorpay_qr_id AS "qrId", image_url AS "imageUrl",
+              amount_paise AS "amountPaise", close_by AS "closeBy"
+         FROM order_qr_payments
+        WHERE order_id = $1 AND status = 'active' AND close_by > now()
+        LIMIT 1`, [orderId]);
+    if (live.length) {
+      return { ...live[0], amount: Number(live[0].amountPaise) / 100, reused: true };
+    }
+
+    const amount = this.cashToCollect(order);
+    const qr = await this.razorpay.createQrCode(amount, orderId);
+
+    await this.dataSource.query(
+      `INSERT INTO order_qr_payments
+         (order_id, razorpay_qr_id, amount_paise, image_url, status, close_by, created_by_rider)
+       VALUES ($1,$2,$3,$4,'active', to_timestamp($5), $6)`,
+      [orderId, qr.id, qr.amountPaise, qr.imageUrl, qr.closeBy, riderId]);
+
+    return {
+      qrId: qr.id,
+      imageUrl: qr.imageUrl,
+      amount,
+      amountPaise: qr.amountPaise,
+      closeBy: new Date(qr.closeBy * 1000).toISOString(),
+      reused: false,
+    };
+  }
+
+  /**
+   * Rider's poll loop AND the customer's tracking page hit this.
+   * Falls back to asking Razorpay directly if the webhook hasn't landed yet —
+   * a doorstep rider cannot stand there waiting on our webhook queue.
+   */
+  async collectStatus(orderId: number) {
+    const order = await this.findOne(orderId);
+    const owed = this.cashToCollect(order);
+
+    const paid = await this.dataSource.query(
+      `SELECT 1 FROM payments
+        WHERE order_id = $1 AND status = 'paid' LIMIT 1`, [orderId]);
+    if (paid.length) {
+      return { paid: true, method: 'online', amount: owed, qr: null };
+    }
+
+    const qrs = await this.dataSource.query(
+      `SELECT razorpay_qr_id AS "qrId", image_url AS "imageUrl", status,
+              amount_paise AS "amountPaise", close_by AS "closeBy"
+         FROM order_qr_payments
+        WHERE order_id = $1 ORDER BY id DESC LIMIT 1`, [orderId]);
+    const qr = qrs[0] || null;
+
+    // Webhook slow or lost? Ask Razorpay directly. This is the safety net that
+    // keeps the rider from being stranded at the door.
+    if (qr && qr.status === 'active') {
+      const live = await this.razorpay.fetchQrCode(qr.qrId);
+      if (live && Number(live.payments_count_received) > 0) {
+        await this.settleQrPayment(orderId, qr.qrId, null, Number(live.payments_amount_received));
+        return { paid: true, method: 'online', amount: owed, qr: null, viaPoll: true };
+      }
+    }
+
+    return { paid: false, method: 'cod', amount: owed, qr };
+  }
+
+  /** Rider aborts the QR — customer decided to pay cash after all. */
+  async cancelDoorstepQr(orderId: number) {
+    const rows = await this.dataSource.query(
+      `SELECT razorpay_qr_id AS "qrId" FROM order_qr_payments
+        WHERE order_id = $1 AND status = 'active' LIMIT 1`, [orderId]);
+    if (!rows.length) return { ok: true, nothingToCancel: true };
+
+    await this.razorpay.closeQrCode(rows[0].qrId);
+    await this.dataSource.query(
+      `UPDATE order_qr_payments SET status = 'closed'
+        WHERE razorpay_qr_id = $1 AND status = 'active'`, [rows[0].qrId]);
+    return { ok: true, closed: rows[0].qrId };
+  }
+
+  /**
+   * The money actually landed. Convert cod → online, atomically and idempotently.
+   *
+   * THE DANGEROUS CASE, and why this is a transaction:
+   * the customer scans and pays at the same moment the rider taps "collected
+   * cash". Without this, the customer pays TWICE and we keep both. Here, if the
+   * COD row is already 'paid' (rider took cash first), we do NOT silently keep
+   * the money — we auto-refund the QR payment and raise an incident.
+   */
+  async settleQrPayment(
+    orderId: number,
+    qrId: string,
+    razorpayPaymentId: string | null,
+    amountPaise: number,
+  ) {
+    return this.dataSource.transaction(async (mgr) => {
+      // idempotency — this payment already booked?
+      if (razorpayPaymentId) {
+        const dupe = await mgr.query(
+          `SELECT 1 FROM payments WHERE transaction_id = $1 LIMIT 1`, [razorpayPaymentId]);
+        if (dupe.length) return { ok: true, alreadySettled: true };
+      }
+
+      // Lock the order row so the rider's "delivered" cannot interleave.
+      const orows = await mgr.query(
+        `SELECT id, total, wallet_used, order_number, user_id
+           FROM orders WHERE id = $1 FOR UPDATE`, [orderId]);
+      if (!orows.length) return { ok: true, ignored: 'no such order' };
+      const o = orows[0];
+      const owedPaise = Math.round(
+        Math.max(Number(o.total) - Number(o.wallet_used || 0), 0) * 100);
+
+      const cod = await mgr.query(
+        `SELECT id, status FROM payments
+          WHERE order_id = $1 AND method = 'cod' LIMIT 1`, [orderId]);
+
+      /* ── DOUBLE COLLECTION ── rider already took cash, and now UPI money has
+         landed too. Give it straight back and page a human. Keeping it is theft
+         and it is exactly the kind of thing that ends up on Twitter. */
+      if (cod.length && cod[0].status === 'paid' && razorpayPaymentId) {
+        await mgr.query(
+          `INSERT INTO payment_incidents (order_id, kind, details)
+           VALUES ($1, 'double_collection', $2)`,
+          [orderId, JSON.stringify({ qrId, razorpayPaymentId, amountPaise })]);
+        this.razorpay.refundPayment(razorpayPaymentId, amountPaise / 100)
+          .catch((e) => console.error('[qr double-collect refund]', e?.message));
+        await mgr.query(
+          `UPDATE order_qr_payments SET status='paid', paid_at=now(),
+                  razorpay_payment_id=$2
+            WHERE razorpay_qr_id = $1`, [qrId, razorpayPaymentId]);
+        return { ok: true, doubleCollection: true, autoRefunded: true };
+      }
+
+      // Amount sanity. fixed_amount:true should make this impossible — so if it
+      // ever fires, something is genuinely wrong and a human must look.
+      if (amountPaise !== owedPaise) {
+        await mgr.query(
+          `INSERT INTO payment_incidents (order_id, kind, details)
+           VALUES ($1, 'amount_mismatch', $2)`,
+          [orderId, JSON.stringify({ qrId, razorpayPaymentId, amountPaise, owedPaise })]);
+      }
+
+      // cod -> online. The rider's cash-in-hand is never touched.
+      if (cod.length) {
+        await mgr.query(
+          `UPDATE payments
+              SET method = 'online', status = 'paid', transaction_id = $2
+            WHERE id = $1 AND status = 'pending'`,
+          [cod[0].id, razorpayPaymentId]);
+      } else {
+        await mgr.query(
+          `INSERT INTO payments (order_id, method, amount, status, transaction_id)
+           VALUES ($1,'online',$2,'paid',$3)`,
+          [orderId, amountPaise / 100, razorpayPaymentId]);
+      }
+
+      await mgr.query(
+        `UPDATE order_qr_payments
+            SET status='paid', paid_at=now(), razorpay_payment_id=$2
+          WHERE razorpay_qr_id = $1`, [qrId, razorpayPaymentId]);
+
+      await mgr.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app','✅ Payment received',$3,true)`,
+        [o.user_id, orderId,
+         `We received ₹${(amountPaise / 100).toFixed(2)} for order ${o.order_number || '#' + orderId}. No cash needed — thank you!`]);
+
+      return { ok: true, settled: true, orderId, amountPaise };
+    });
   }
 
   /**

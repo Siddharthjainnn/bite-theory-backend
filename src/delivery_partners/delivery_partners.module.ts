@@ -8,5 +8,6 @@ import { DeliveryPartnerController } from './delivery_partners.controller';
   imports: [TypeOrmModule.forFeature([DeliveryPartner])],
   controllers: [DeliveryPartnerController],
   providers: [DeliveryPartnerService],
+  exports: [DeliveryPartnerService],
 })
 export class DeliveryPartnerModule {}

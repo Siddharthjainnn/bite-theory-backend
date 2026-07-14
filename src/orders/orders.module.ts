@@ -10,9 +10,11 @@ import { SettingsModule } from '../settings/settings.module';
 import { ThaliModule } from '../thali/thali.module';
 import { ScratchModule } from '../scratch/scratch.module';
 import { FlashModule } from '../flash/flash.module';
+import { DeliveryPartnerModule } from '../delivery_partners/delivery_partners.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule, ThaliModule, ScratchModule, FlashModule],
+  imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule, ThaliModule,
+    ScratchModule, FlashModule, DeliveryPartnerModule],
   controllers: [OrdersController],
   providers: [OrdersService, RazorpayService, MailService],
 })

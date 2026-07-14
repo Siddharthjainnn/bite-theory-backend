@@ -57,6 +57,46 @@ export class OrdersController {
     }
   }
 
+  /* ═════════════ DOORSTEP UPI QR ═════════════ */
+
+  /**
+   * Rider: "customer wants to pay online" → mint a fixed-amount, single-use QR.
+   * The amount is computed server-side from the order; the rider never sends it,
+   * so a rider cannot mint a ₹1 QR for a ₹900 order and pocket the difference.
+   */
+  @UseGuards(RiderAuthGuard)
+  @Post(':id/collect/qr')
+  createQr(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: Request & { riderId?: number },
+  ) {
+    return this.service.createDoorstepQr(id, riderIdFromReq(req));
+  }
+
+  /**
+   * Poll: has the money landed? The rider app hits this every ~3s while the QR
+   * is on screen. Ownership-checked so a customer can watch it from their own
+   * tracking page too.
+   */
+  @Get(':id/collect/status')
+  async collectStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: Request,
+  ) {
+    if (!this.isAdmin(req) && !riderIdFromReq(req)) {
+      const order = await this.service.findOne(id);
+      requireSelfOrAdmin(req, Number((order as any).userId));
+    }
+    return this.service.collectStatus(id);
+  }
+
+  /** Rider: customer changed their mind, taking cash. Kill the QR. */
+  @UseGuards(RiderAuthGuard)
+  @Post(':id/collect/cancel')
+  cancelQr(@Param('id', ParseIntPipe) id: number) {
+    return this.service.cancelDoorstepQr(id);
+  }
+
   /** Customer cancels their own order (only before cooking starts). */
   @UseGuards(UserAuthGuard)
   @Post(':id/cancel')

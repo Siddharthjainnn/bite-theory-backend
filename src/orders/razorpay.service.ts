@@ -103,6 +103,64 @@ export class RazorpayService {
     }
   }
 
+  /* ───────────────── Doorstep UPI QR (pay-on-delivery, no cash) ─────────────────
+     NOTE: QR Codes is an ON-DEMAND Razorpay feature. Raise a request with
+     Razorpay support to enable it, or these calls will fail with a 400. */
+
+  /**
+   * Mint a single-use, fixed-amount UPI QR for one order.
+   *
+   * `fixed_amount: true` is what makes this safe: Razorpay itself rejects any
+   * payment that is not EXACTLY this amount, so the customer cannot underpay
+   * and we can never be tricked into marking an order paid for ₹1.
+   * `single_use` means the QR closes itself after one payment — it can't be
+   * screenshotted and reused by a second customer.
+   *
+   * orderId is stamped into `notes` so the webhook can find its way home.
+   */
+  async createQrCode(amountRupees: number, orderId: number, ttlMinutes = 30) {
+    const amountPaise = Math.round(amountRupees * 100);
+    if (amountPaise < 100) {
+      throw new BadRequestException('QR amount must be at least ₹1.');
+    }
+    // Razorpay requires close_by comfortably in the future (min 15m, max 2h for
+    // single_use). 30m is a sane doorstep window.
+    const ttl = Math.min(Math.max(ttlMinutes, 16), 115);
+    const closeBy = Math.floor(Date.now() / 1000) + ttl * 60;
+    try {
+      const qr = await this.instance.qrCode.create({
+        type: 'upi_qr',
+        name: (process.env.STORE_NAME || 'Bites Theory').slice(0, 50),
+        usage: 'single_use',
+        fixed_amount: true,
+        payment_amount: amountPaise,
+        description: `Order #${orderId}`,
+        close_by: closeBy,
+        notes: { orderId: String(orderId), source: 'doorstep' },
+      });
+      return {
+        id: qr.id as string,
+        imageUrl: qr.image_url as string,
+        amountPaise,
+        closeBy,
+      };
+    } catch (e: any) {
+      throw new InternalServerErrorException(
+        e?.error?.description || 'Could not create the UPI QR code.',
+      );
+    }
+  }
+
+  /** Close a QR (rider fell back to cash, or order cancelled). Best-effort. */
+  async closeQrCode(qrId: string) {
+    try { return await this.instance.qrCode.close(qrId); } catch { return null; }
+  }
+
+  /** Poll a QR directly — the safety net when a webhook is slow or lost. */
+  async fetchQrCode(qrId: string) {
+    try { return await this.instance.qrCode.fetch(qrId); } catch { return null; }
+  }
+
   /**
    * Refund a captured payment (full refund by default).
    * amountRupees, if given, does a partial refund.
