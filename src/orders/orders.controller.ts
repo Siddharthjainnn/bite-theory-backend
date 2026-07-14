@@ -6,10 +6,12 @@ import { Request } from 'express';
 import { OrdersService } from './orders.service';
 import { RazorpayService } from './razorpay.service';
 import { UserAuthGuard, verifyUserToken } from '../common/user-auth.guard';
+import { RiderAuthGuard, riderIdFromReq, safeEqual } from '../common/rider-auth.guard';
+import { AdminAuthGuard, Roles } from '../common/admin-auth.guard';
 import { requireSelfOrAdmin } from '../common/req-auth.util';
 import {
   CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
-  SetPrepVideoDto,
+  SetPrepVideoDto, RefundOrderDto,
 } from './dto';
 
 @Controller('orders')
@@ -42,7 +44,7 @@ export class OrdersController {
     const header =
       (req.headers['x-admin-key'] as string) ||
       (req.headers['authorization'] as string)?.replace(/^Bearer\s+/i, '') || '';
-    return header === expected;
+    return !!header && safeEqual(header, expected);   // P1: constant-time
   }
 
   /** Enforce: token uid must exist (when enforcement is on) and match dto.userId. */
@@ -167,18 +169,51 @@ export class OrdersController {
     return this.service.createPaymentOrder(dto);
   }
 
-  /** Legacy admin create. */
+  /**
+   * P0-2: this route used to be PUBLIC (it sat in AdminWriteGuard's allow-list
+   * as "place order") while accepting a client-supplied userId, subtotal and
+   * total. Anyone could POST a ₹0 order for any user, or flood the kitchen
+   * queue with fake tickets. Customers place orders via /checkout, which
+   * prices everything server-side. This is now admin-only.
+   */
+  @UseGuards(AdminAuthGuard)
   @Post() create(@Body() dto: CreateOrderDto) { return this.service.create(dto); }
 
+  /**
+   * P0-1: the ONLY post-delivery refund path. Deliberate, admin-only, audited.
+   * Replaces the old `delivered -> cancelled` trick that refunded eaten food.
+   */
+  @UseGuards(AdminAuthGuard)
+  @Roles('super_admin')
+  @Post(':id/refund')
+  refund(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RefundOrderDto,
+  ) {
+    return this.service.adminRefund(id, dto.reason, dto.amount);
+  }
+
+  @UseGuards(AdminAuthGuard)
   @Patch(':id') update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateOrderDto) { return this.service.update(id, dto); }
+  /**
+   * P0-1: was an UNAUTHENTICATED public write whose only credential was
+   * dto.deliveryPartnerId — a sequential integer we hand to every customer in
+   * the /track payload. Now it needs a signed rider token, and the rider id is
+   * read FROM THE TOKEN, never from the body.
+   */
+  @UseGuards(RiderAuthGuard)
   @Patch(':id/status')
   updateStatus(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateOrderStatusDto,
-    @Req() req: Request,
+    @Req() req: Request & { riderId?: number },
   ) {
     // admin panel can force any status without OTP/geofence
-    return this.service.updateStatus(id, dto, this.isAdmin(req));
+    return this.service.updateStatus(
+      id, dto, this.isAdmin(req), false, riderIdFromReq(req),
+    );
   }
+  @UseGuards(AdminAuthGuard)
+  @Roles('super_admin')
   @Delete(':id') remove(@Param('id', ParseIntPipe) id: number) { return this.service.remove(id); }
 }

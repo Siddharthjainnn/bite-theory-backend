@@ -24,14 +24,16 @@ export class AdminWriteGuard implements CanActivate {
   // customer-facing writes that must stay open (matched as path prefixes, sans /api)
   private readonly publicWrites: { method: string; path: RegExp }[] = [
     { method: 'POST', path: /^\/delivery-partners\/login$/ },
-    { method: 'POST', path: /^\/orders$/ },                  // place order (create)
+    // P0-2: `POST /orders` REMOVED from this list. It accepted a client-supplied
+    // userId/subtotal/total with no auth. Customers order via /checkout.
     { method: 'POST', path: /^\/orders\/checkout$/ },        // checkout flow
     { method: 'POST', path: /^\/orders\/create-payment$/ },  // open razorpay order
     { method: 'POST', path: /^\/orders\/razorpay-webhook$/ }, // Razorpay server → us (signature-verified in controller)
     { method: 'POST', path: /^\/orders\/[^/]+\/cancel$/ },      // customer cancels own order (user-token verified)
-    { method: 'POST', path: /^\/orders\/[^/]+\/accept$/ },   // rider accepts order
-    { method: 'PATCH', path: /^\/orders\/[^/]+\/status$/ },  // rider updates status
-    { method: 'PATCH', path: /^\/delivery-partners\/[^/]+\/location$/ },
+    // P0-1 / P0-3: `PATCH /orders/:id/status` and `PATCH /delivery-partners/:id/location`
+    // REMOVED. Their only credential was the rider's sequential integer id, which
+    // we hand to every customer in the /track payload. Both now sit behind
+    // RiderAuthGuard (x-rider-token) at the controller.
     { method: 'POST', path: /^\/addresses$/ },              // add my address
     { method: 'PATCH', path: /^\/addresses\/[^/]+$/ },      // edit my address
     { method: 'DELETE', path: /^\/addresses\/[^/]+$/ },     // delete my address

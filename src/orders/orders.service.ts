@@ -16,6 +16,7 @@ import { SettingsService } from '../settings/settings.service';
 import { ThaliService } from '../thali/thali.service';
 import { ScratchService } from '../scratch/scratch.service';
 import { FlashService } from '../flash/flash.service';
+import { assertTransition, assertRiderMaySet } from './order-status.machine';
 
 @Injectable()
 export class OrdersService {
@@ -919,8 +920,24 @@ export class OrdersService {
       );
       return { ok: true, orderId: (order as any).id, recovered: true };
     } catch (e: any) {
-      // Log, but never 500 a webhook — Razorpay retries and we stay idempotent.
+      /* P1: DO NOT silently swallow this. We already returned 200 to Razorpay,
+         so it will never retry — the money is captured and there is no order.
+         Park it in failed_payments so ops can see it and reconcile, instead of
+         the customer discovering it themselves. */
       console.error('[razorpay-webhook]', e?.message || e);
+      try {
+        const p = event?.payload?.payment?.entity;
+        await this.dataSource.query(
+          `INSERT INTO failed_payments
+             (razorpay_payment_id, razorpay_order_id, amount_paise, error, payload)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (razorpay_payment_id) DO NOTHING`,
+          [p?.id ?? null, p?.order_id ?? null, p?.amount ?? null,
+           String(e?.message || e).slice(0, 500), JSON.stringify(event ?? {})]);
+      } catch (inner: any) {
+        // last resort — this one really is unrecoverable, so make it loud
+        console.error('[razorpay-webhook] FAILED TO DEAD-LETTER', inner?.message || inner);
+      }
       return { ok: true, error: e?.message };
     }
   }
@@ -1107,24 +1124,41 @@ export class OrdersService {
     return this.repo.save(order);
   }
 
-  async updateStatus(id: number, dto: UpdateOrderStatusDto, isAdmin = false, trustedCaller = false) {
+  async updateStatus(
+    id: number,
+    dto: UpdateOrderStatusDto,
+    isAdmin = false,
+    trustedCaller = false,
+    riderId: number | null = null,
+  ) {
     const order = await this.findOne(id);
 
-    /* ── C1: authorize non-admin status changes ──────────────────────────
-       Admin (server key) may drive any order. The rider app must prove it's
-       the rider assigned to THIS order via deliveryPartnerId. `trustedCaller`
-       is for internal transitions that were ALREADY authorized upstream —
-       e.g. cancelByCustomer, which has its own ownership + status checks — so
-       they aren't wrongly blocked by the rider rule. The public HTTP /status
-       route never sets trustedCaller, so strangers are still locked out. */
+    /* ── P0-1: the lifecycle is a state machine, not a free-for-all ───────
+       Applies to EVERYONE, admin included. `delivered` and `cancelled` are
+       terminal, so no caller can walk a delivered order back to `cancelled`
+       and trigger refundOnCancel() after the food is gone. Post-delivery
+       money movement is an explicit, audited admin action: adminRefund(). */
+    assertTransition(order.status, dto.status);
+
+    /* ── P0-1: authorize non-admin status changes ─────────────────────────
+       The rider's identity now comes from a SIGNED TOKEN (req.riderId), never
+       from dto.deliveryPartnerId — that field was a sequential primary key we
+       hand to every customer in the /track payload, i.e. not a secret.
+       `trustedCaller` is for internal transitions already authorized upstream
+       (cancelByCustomer, which does its own ownership + status checks). */
     if (!isAdmin && !trustedCaller) {
+      if (!riderId) {
+        throw new ForbiddenException('Rider sign-in required to change this order.');
+      }
       if (!order.deliveryPartnerId) {
         throw new ForbiddenException(
           'This order has no assigned rider. Only staff can change its status.');
       }
-      if (Number(dto.deliveryPartnerId) !== Number(order.deliveryPartnerId)) {
+      if (Number(riderId) !== Number(order.deliveryPartnerId)) {
         throw new ForbiddenException('You are not the rider assigned to this order.');
       }
+      // A rider can drive a delivery. A rider cannot cancel or refund one.
+      assertRiderMaySet(dto.status);
     }
 
     /* An order cannot move to (or past) dispatch without a rider attached.
@@ -1256,9 +1290,74 @@ export class OrdersService {
     return this.historyRepo.find({ where: { orderId }, order: { createdAt: 'ASC' } });
   }
 
+  /**
+   * P0-1 replacement path: post-delivery money movement.
+   *
+   * The ONLY legitimate way to return money on a delivered order. Deliberate,
+   * admin-only, audited, and it does NOT touch order status, inventory,
+   * coupons, referral cash or rider earnings — the food was made, delivered
+   * and paid for. Reversing those was what made the old cancel-after-delivery
+   * bug so expensive.
+   *
+   * Idempotent: the `status = 'paid'` filter means a second call finds nothing.
+   */
+  async adminRefund(orderId: number, reason: string, amountRupees?: number) {
+    const order = await this.findOne(orderId);
+    if (!reason || !reason.trim()) {
+      throw new BadRequestException('A refund reason is required (it goes in the audit log).');
+    }
+
+    const pay = await this.dataSource.query(
+      `SELECT id, amount, transaction_id FROM payments
+        WHERE order_id = $1 AND method = 'online' AND status = 'paid'
+          AND transaction_id IS NOT NULL LIMIT 1`, [orderId]);
+
+    if (!pay.length) {
+      throw new BadRequestException(
+        'No captured online payment to refund on this order (already refunded, or COD).');
+    }
+
+    const full = Number(pay[0].amount);
+    const amount = amountRupees && amountRupees > 0 ? Math.min(amountRupees, full) : full;
+    const isPartial = amount < full;
+
+    const refund = await this.razorpay.refundPayment(pay[0].transaction_id, amount);
+
+    // Only a FULL refund closes out the payment row; a partial leaves it 'paid'
+    // so the remainder is still reconcilable.
+    if (!isPartial) {
+      await this.dataSource.query(
+        `UPDATE payments SET status = 'refunded' WHERE id = $1`, [pay[0].id]);
+    }
+
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (actor, action, entity, entity_id, details)
+       VALUES ('admin', 'order.refund', 'orders', $1, $2)`,
+      [orderId, JSON.stringify({
+        amount, full, partial: isPartial, reason, razorpayRefundId: refund?.id ?? null,
+      })]);
+
+    await this.dataSource.query(
+      `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+       VALUES ($1,$2,'in_app','💸 Refund initiated',$3,true)`,
+      [order.userId, orderId,
+       `₹${amount} refund started (ref ${refund?.id || ''}). It usually reaches your account in 5–7 working days.`]);
+
+    return { ok: true, orderId, amount, partial: isPartial, razorpayRefundId: refund?.id ?? null };
+  }
+
+  /**
+   * P1: orders are financial records — never hard-delete them. You will need
+   * this row for a chargeback dispute six months from now.
+   */
   async remove(id: number) {
     const order = await this.findOne(id);
-    await this.repo.remove(order);
-    return { deleted: true, id };
+    await this.dataSource.query(
+      `UPDATE orders SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, [id]);
+    await this.dataSource.query(
+      `INSERT INTO audit_logs (actor, action, entity, entity_id, details)
+       VALUES ('admin', 'order.soft_delete', 'orders', $1, $2)`,
+      [id, JSON.stringify({ status: order.status, orderNumber: order.orderNumber })]);
+    return { deleted: true, softDeleted: true, id };
   }
 }

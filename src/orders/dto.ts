@@ -108,3 +108,10 @@ export class UpdateOrderStatusDto {
   @IsOptional() @Type(() => Number) @IsNumber() riderLat?: number;
   @IsOptional() @Type(() => Number) @IsNumber() riderLng?: number;
 }
+
+/** P0-1: admin-only post-delivery refund. Reason is mandatory — it's audited. */
+export class RefundOrderDto {
+  @IsString() @IsNotEmpty() @MaxLength(300) reason!: string;
+  /** Omit for a full refund; supply rupees for a partial. */
+  @IsOptional() @IsNumber() @Min(1) amount?: number;
+}

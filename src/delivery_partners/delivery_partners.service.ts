@@ -5,6 +5,7 @@ import { haversineKm } from '../common/geo.util';
 import { DeliveryPartner } from './delivery-partner.entity';
 import { CreateDeliveryPartnerDto } from './create-delivery-partner.dto';
 import { UpdateDeliveryPartnerDto } from './update-delivery-partner.dto';
+import { signRiderJwt, safeEqual } from '../common/rider-auth.guard';
 
 @Injectable()
 export class DeliveryPartnerService {
@@ -163,10 +164,29 @@ export class DeliveryPartnerService {
    * old mobile-only lookup so existing riders keep working after deploy.
    */
   async login(mobile: string, code: string) {
+    /* P0-3: was mobile + ONE shared code for every rider, and `GET
+       /delivery-partners` published every rider's mobile number publicly — so
+       anyone could sign in as any rider. The code is now mandatory (fail
+       closed), and login returns a signed session token instead of a bare id. */
     const expected = process.env.RIDER_LOGIN_CODE;
-    if (expected && code !== expected) {
+    if (!expected) {
+      throw new UnauthorizedException(
+        'Rider login is not configured on the server (RIDER_LOGIN_CODE).');
+    }
+    if (!safeEqual(code || '', expected)) {
       throw new UnauthorizedException('Invalid rider access code');
     }
-    return this.findByMobile(mobile);
+    const rider = await this.findByMobile(mobile);
+    const token = signRiderJwt({
+      sub: Number(rider.id), name: rider.name, mobile: rider.mobile,
+    });
+    return { ...rider, token };
+  }
+
+  /** Rider id must come from the verified token, never the URL. */
+  assertSelf(riderId: number | null, urlId: number) {
+    if (riderId != null && Number(riderId) !== Number(urlId)) {
+      throw new UnauthorizedException('You can only act as yourself.');
+    }
   }
 }
