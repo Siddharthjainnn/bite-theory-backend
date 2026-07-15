@@ -3,6 +3,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { verifyAdminJwt } from './admin-auth.guard';
+import { verifyRiderJwt } from './rider-auth.guard';
 
 /**
  * Global write-protection guard.
@@ -49,6 +50,28 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/scratch-cards\/[^/]+\/scratch$/ },       // customer reveals their scratch card
   ];
 
+  /**
+   * BUGFIX — riders got "Admin key required for this operation" on every action
+   * (start delivery, mark delivered, GPS ping, doorstep QR).
+   *
+   * Root cause: these routes were deliberately moved behind RiderAuthGuard at
+   * the controller, and removed from publicWrites above. But THIS guard is an
+   * APP_GUARD — it runs BEFORE any controller-level guard. So the request was
+   * rejected here and RiderAuthGuard never got the chance to authorise it.
+   *
+   * Fix: recognise rider-owned write routes and let them through *only* when
+   * the request carries a VALID signed rider token. The controller's
+   * RiderAuthGuard then still enforces "you can only act as yourself", so this
+   * is not a loosening of access — it just stops the outer guard from
+   * pre-empting the inner one.
+   */
+  private readonly riderWrites: { method: string; path: RegExp }[] = [
+    { method: 'PATCH', path: /^\/orders\/[^/]+\/status$/ },              // start delivery / mark delivered
+    { method: 'POST', path: /^\/orders\/[^/]+\/collect\/qr$/ },          // doorstep UPI QR
+    { method: 'POST', path: /^\/orders\/[^/]+\/collect\/cancel$/ },      // cancel that QR
+    { method: 'PATCH', path: /^\/delivery-partners\/[^/]+\/location$/ },  // GPS ping
+  ];
+
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
     const method = req.method.toUpperCase();
@@ -62,6 +85,15 @@ export class AdminWriteGuard implements CanActivate {
     // customer-facing writes stay open
     if (this.publicWrites.some((r) => r.method === method && r.path.test(path))) {
       return true;
+    }
+
+    // Rider-owned writes: pass through when a VALID rider token is present.
+    // The controller's RiderAuthGuard still verifies identity + ownership.
+    if (this.riderWrites.some((r) => r.method === method && r.path.test(path))) {
+      const riderTok = (req.headers['x-rider-token'] as string) || '';
+      if (riderTok && verifyRiderJwt(riderTok)) return true;
+      // no/invalid rider token → fall through so admins can still dispatch
+      // manually with the admin key (break-glass).
     }
 
     // everything else that writes needs the admin key
