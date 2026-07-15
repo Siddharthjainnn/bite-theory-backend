@@ -145,8 +145,31 @@ export class RazorpayService {
         closeBy,
       };
     } catch (e: any) {
+      /* BUGFIX — "Pay online (UPI QR)" failed with an opaque message, so there
+         was no way to tell WHY. Razorpay's real reason lives in e.error.*
+         (description/reason/code) or e.message. Surface it, and log the full
+         payload server-side so Render logs show the truth.
+
+         Most common causes in practice:
+          - QR Codes not enabled on the Razorpay account (it's a separate
+            product from Checkout — has to be activated).
+          - TEST-mode keys: qrCode.create is not supported on many test
+            accounts, so this 400s no matter what the code does.
+          - close_by outside Razorpay's allowed window for single_use QRs. */
+      const rz = e?.error || {};
+      const reason =
+        rz.description || rz.reason || rz.code || e?.message ||
+        'Could not create the UPI QR code.';
+      // eslint-disable-next-line no-console
+      console.error('[razorpay.createQrCode] failed', {
+        orderId, amountPaise, closeBy,
+        keyMode: this.keyId.startsWith('rzp_test_') ? 'TEST' : 'LIVE',
+        error: rz, message: e?.message,
+      });
       throw new InternalServerErrorException(
-        e?.error?.description || 'Could not create the UPI QR code.',
+        `UPI QR failed: ${reason}. If this persists, check that QR Codes are ` +
+        `enabled on the Razorpay account (they are separate from Checkout, and ` +
+        `are often unavailable on test keys).`,
       );
     }
   }
