@@ -49,6 +49,28 @@ export class DeliveryPartnerController {
     return this.service.findOne(id);
   }
 
+  /**
+   * Admin-only config check — diagnoses the "shift session expired right after
+   * login" class of bugs in one request. Reports WHICH rider env vars are set
+   * (never their values).
+   */
+  @UseGuards(AdminAuthGuard)
+  @Get('config/health')
+  configHealth() {
+    const loginCode = !!process.env.RIDER_LOGIN_CODE;
+    const jwtSecret = !!process.env.RIDER_JWT_SECRET;
+    return {
+      riderLoginCodeSet: loginCode,
+      riderJwtSecretSet: jwtSecret,
+      ok: loginCode && jwtSecret,
+      hint: !jwtSecret
+        ? 'RIDER_JWT_SECRET is missing — riders can log in but every action 401s ("shift session expired"). Set it on the backend and restart.'
+        : !loginCode
+          ? 'RIDER_LOGIN_CODE is missing — riders cannot log in at all.'
+          : 'Rider auth is configured correctly.',
+    };
+  }
+
   /** Rider dashboard: today/week earnings, COD cash-in-hand, delivery history. */
   @UseGuards(RiderAuthGuard)
   @Get(':id/earnings')

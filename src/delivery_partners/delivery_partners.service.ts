@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, UnauthorizedException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { haversineKm } from '../common/geo.util';
@@ -249,6 +249,22 @@ export class DeliveryPartnerService {
     if (!safeEqual(code || '', expected)) {
       throw new UnauthorizedException('Invalid rider access code');
     }
+
+    /* BUGFIX — "Your shift session expired. Please sign in again." right after
+       a successful login.
+       Root cause: login only needed RIDER_LOGIN_CODE, but every guarded rider
+       route verifies the session JWT with RIDER_JWT_SECRET. If that secret is
+       missing (or was rotated), signRiderJwt() produced a token that
+       verifyRiderJwt() could never validate -> every call 401 -> the rider app
+       wiped the session and showed "shift session expired", even though the
+       login itself had succeeded. Fail loudly at LOGIN instead of handing out
+       a token that is dead on arrival. */
+    if (!process.env.RIDER_JWT_SECRET) {
+      throw new ServiceUnavailableException(
+        'Rider sessions are not configured on the server (RIDER_JWT_SECRET). ' +
+        'Ask an admin to set it, then sign in again.');
+    }
+
     const rider = await this.findByMobile(mobile);
     const token = signRiderJwt({
       sub: Number(rider.id), name: rider.name, mobile: rider.mobile,
