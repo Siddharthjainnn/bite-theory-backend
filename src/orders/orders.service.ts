@@ -60,6 +60,21 @@ export class OrdersService {
             WHERE order_id = ANY($1) AND status = 'active' AND close_by > now()`, [ids]);
         const qrOpen = new Set<number>(qrs.map((q: any) => Number(q.order_id)));
 
+        /* Bug #77: a rider who can't find the door had no way to call the
+           customer. Attach the customer's name + mobile — but ONLY for the
+           rider assigned to that order, and ONLY while it's still in flight
+           (never on delivered/cancelled history), so contact details aren't
+           retained beyond the delivery. */
+        const custs = await this.dataSource.query(
+          `SELECT o.id AS order_id, u.first_name, u.last_name, u.mobile
+             FROM orders o JOIN users u ON u.id = o.user_id
+            WHERE o.id = ANY($1)
+              AND o.delivery_partner_id = $2
+              AND o.status NOT IN ('delivered','cancelled')`,
+          [ids, filters.deliveryPartnerId]);
+        const custByOrder = new Map<number, any>(
+          custs.map((c: any) => [Number(c.order_id), c]));
+
         rows.forEach((r: any) => {
           const p = byOrder.get(Number(r.id));
           const owed = Math.max(Number(r.total) - Number(r.walletUsed || 0), 0);
@@ -68,6 +83,10 @@ export class OrdersService {
           // Cash the rider must physically collect. Zero once paid (incl. by QR).
           r.cashToCollect = (p?.method === 'cod' && p?.status === 'pending') ? owed : 0;
           r.qrOpen = qrOpen.has(Number(r.id));
+
+          const c = custByOrder.get(Number(r.id));
+          r.customerName = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : null;
+          r.customerMobile = c?.mobile ?? null;
         });
       }
     }
