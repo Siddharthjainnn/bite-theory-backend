@@ -92,8 +92,25 @@ export class AdminWriteGuard implements CanActivate {
     if (this.riderWrites.some((r) => r.method === method && r.path.test(path))) {
       const riderTok = (req.headers['x-rider-token'] as string) || '';
       if (riderTok && verifyRiderJwt(riderTok)) return true;
-      // no/invalid rider token → fall through so admins can still dispatch
-      // manually with the admin key (break-glass).
+
+      /* A rider route was hit WITHOUT a usable rider token. The old message
+         ("Admin key required") sent riders hunting for an admin problem when
+         the real cause is almost always their own stale session: a token
+         minted before RIDER_JWT_SECRET was set/rotated can never verify again.
+         Say that plainly — but only when there's no admin key either, so admin
+         break-glass dispatch still works. */
+      const adminHeader =
+        (req.headers['x-admin-key'] as string) ||
+        (req.headers['authorization'] as string)?.replace(/^Bearer\s+/i, '') || '';
+      if (!adminHeader) {
+        throw new UnauthorizedException(
+          riderTok
+            ? 'Your rider session is no longer valid (it was issued before the ' +
+              'server key changed). Please log out and sign in again.'
+            : 'Rider sign-in required for this action. Please log in again.',
+        );
+      }
+      // has an admin key → fall through to the admin check below (break-glass).
     }
 
     // everything else that writes needs the admin key
