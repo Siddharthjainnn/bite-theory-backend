@@ -1717,8 +1717,29 @@ export class OrdersService {
    * audit row is written inside the same flow that calls Razorpay, so the list
    * can never disagree with what actually happened.
    */
+  /** True if audit_logs has the `actor` column (see 2026-07-16-audit-actor.sql). */
+  private async auditHasActor(): Promise<boolean> {
+    try {
+      const r = await this.dataSource.query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'audit_logs' AND column_name = 'actor' LIMIT 1`);
+      return r.length > 0;
+    } catch { return false; }
+  }
+
   async listRefunds(q?: string) {
     const term = (q || '').trim();
+
+    /* BUGFIX — GET /orders/refunds/list returned 500.
+       Root cause: audit_logs.actor did not exist. The column was declared on
+       the entity and written by raw SQL in the refund path, but no migration
+       ever created it (audit_logs predates the migrations folder), and the
+       refund path had never run in production — so nothing surfaced the gap
+       until this screen tried to SELECT a.actor.
+       2026-07-16-audit-actor.sql adds it. This guard means a missing column can
+       degrade the actor name rather than take the whole page down. */
+    const hasActor = await this.auditHasActor();
+    const actorCol = hasActor ? 'a.actor' : `'system'`;
 
     const refunds = await this.dataSource.query(
       `SELECT a.id,
@@ -1734,7 +1755,7 @@ export class OrdersService {
               a.details->>'razorpayRefundId'      AS "razorpayRefundId",
               (a.action = 'order.refund_failed')  AS failed,
               a.details->>'error'                 AS error,
-              a.actor                             AS actor,
+              ${actorCol}                         AS actor,
               a.created_at                        AS "createdAt"
          FROM audit_logs a
          LEFT JOIN orders o ON o.id = a.entity_id

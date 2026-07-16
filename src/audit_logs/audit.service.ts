@@ -28,6 +28,19 @@ import { verifyAdminJwt } from '../common/admin-auth.guard';
 export class AuditService {
   constructor(private readonly dataSource: DataSource) {}
 
+  /** Cached one-time check: does audit_logs have the `actor` column? */
+  private actorColumn: boolean | null = null;
+  private async hasActorColumn(): Promise<boolean> {
+    if (this.actorColumn !== null) return this.actorColumn;
+    try {
+      const r = await this.dataSource.query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'audit_logs' AND column_name = 'actor' LIMIT 1`);
+      this.actorColumn = r.length > 0;
+    } catch { this.actorColumn = false; }
+    return this.actorColumn;
+  }
+
   /** Identify the caller from the admin JWT (falls back to the master key). */
   private actorFrom(req?: Request): { actor: string; adminUserId: number | null } {
     if (!req) return { actor: 'system', adminUserId: null };
@@ -57,12 +70,26 @@ export class AuditService {
   ): Promise<void> {
     try {
       const { actor, adminUserId } = this.actorFrom(req);
-      await this.dataSource.query(
-        `INSERT INTO audit_logs (admin_user_id, actor, action, entity, entity_id, details)
-         VALUES ($1,$2,$3,$4,$5,$6)`,
-        [adminUserId, actor, action, entity,
-         entityId == null ? null : Number(entityId) || null,
-         JSON.stringify(details)]);
+      /* `actor` is added by 2026-07-16-audit-actor.sql. If that migration has
+         not been applied yet, fall back to an insert without it rather than
+         losing the audit row entirely — a log line without a name still beats
+         no log line. */
+      const hasActor = await this.hasActorColumn();
+      if (hasActor) {
+        await this.dataSource.query(
+          `INSERT INTO audit_logs (admin_user_id, actor, action, entity, entity_id, details)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [adminUserId, actor, action, entity,
+           entityId == null ? null : Number(entityId) || null,
+           JSON.stringify(details)]);
+      } else {
+        await this.dataSource.query(
+          `INSERT INTO audit_logs (admin_user_id, action, entity, entity_id, details)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [adminUserId, action, entity,
+           entityId == null ? null : Number(entityId) || null,
+           JSON.stringify({ ...details, actor })]);
+      }
     } catch (e: any) {
       // Deliberate: never let auditing break the thing it is auditing.
       // eslint-disable-next-line no-console
