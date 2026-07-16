@@ -1467,6 +1467,20 @@ export class OrdersService {
         'Nothing to collect — this order is already paid.');
     }
 
+    /* BUGFIX — 500 on POST /orders/:id/collect/qr.
+       order_qr_payments has a UNIQUE index on (order_id) WHERE status='active',
+       but NOTHING ever retired an expired row. The SELECT below skips expired
+       QRs (close_by > now()), so the code happily tried to INSERT a fresh one —
+       and the still-'active' expired row tripped the unique index, surfacing as
+       a raw Postgres error = 500. Once a rider's QR aged past close_by, that
+       order could NEVER get another QR.
+       Retire anything past close_by first, then the insert is safe. */
+    await this.dataSource.query(
+      `UPDATE order_qr_payments
+          SET status = 'closed'
+        WHERE order_id = $1 AND status = 'active' AND close_by <= now()`,
+      [orderId]);
+
     // Re-use a live QR rather than minting another one.
     const live = await this.dataSource.query(
       `SELECT razorpay_qr_id AS "qrId", image_url AS "imageUrl",
@@ -1481,11 +1495,28 @@ export class OrdersService {
     const amount = this.cashToCollect(order);
     const qr = await this.razorpay.createQrCode(amount, orderId);
 
-    await this.dataSource.query(
-      `INSERT INTO order_qr_payments
-         (order_id, razorpay_qr_id, amount_paise, image_url, status, close_by, created_by_rider)
-       VALUES ($1,$2,$3,$4,'active', to_timestamp($5), $6)`,
-      [orderId, qr.id, qr.amountPaise, qr.imageUrl, qr.closeBy, riderId]);
+    try {
+      await this.dataSource.query(
+        `INSERT INTO order_qr_payments
+           (order_id, razorpay_qr_id, amount_paise, image_url, status, close_by, created_by_rider)
+         VALUES ($1,$2,$3,$4,'active', to_timestamp($5), $6)`,
+        [orderId, qr.id, qr.amountPaise, qr.imageUrl, qr.closeBy, riderId]);
+    } catch (e: any) {
+      /* Belt and braces: if two taps race, one loses the unique index. Return
+         the QR that won instead of a 500. */
+      if (String(e?.code) === '23505') {
+        const won = await this.dataSource.query(
+          `SELECT razorpay_qr_id AS "qrId", image_url AS "imageUrl",
+                  amount_paise AS "amountPaise", close_by AS "closeBy"
+             FROM order_qr_payments
+            WHERE order_id = $1 AND status = 'active'
+            LIMIT 1`, [orderId]);
+        if (won.length) {
+          return { ...won[0], amount: Number(won[0].amountPaise) / 100, reused: true };
+        }
+      }
+      throw e;
+    }
 
     return {
       qrId: qr.id,
