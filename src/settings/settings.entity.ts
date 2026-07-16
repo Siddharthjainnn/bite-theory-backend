@@ -129,6 +129,31 @@ export class StoreSettings {
   @Column({ type: 'jsonb', name: 'invoice_config', nullable: true })
   invoiceConfig: InvoiceConfig | null;
 
+  /* ── GST (2026-07-16-gst-invoicing.sql). All default OFF so nothing changes
+     until you actually register. Tax is snapshotted onto each order, so
+     changing these later never rewrites past invoices. ── */
+  @Column({ type: 'boolean', name: 'gst_enabled', default: false })
+  gstEnabled: boolean;
+
+  /** Restaurant rate is 5% (no input tax credit). */
+  @Column({ type: 'numeric', name: 'gst_rate', default: 5 })
+  gstRate: number;
+
+  /** Restaurant GST applies to food, not the delivery fee — off by default. */
+  @Column({ type: 'boolean', name: 'gst_on_delivery', default: false })
+  gstOnDelivery: boolean;
+
+  /** Indian menus show GST-inclusive prices; tax is extracted, not added. */
+  @Column({ type: 'boolean', name: 'gst_inclusive', default: true })
+  gstInclusive: boolean;
+
+  @Column({ type: 'varchar', name: 'invoice_prefix', default: 'BT' })
+  invoicePrefix: string;
+
+  /** 996331 = restaurant / catering services. */
+  @Column({ type: 'varchar', name: 'hsn_code', nullable: true })
+  hsnCode: string;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

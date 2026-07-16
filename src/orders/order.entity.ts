@@ -11,6 +11,15 @@ export class Order {
   @Column({ type: 'numeric', default: 0 }) discount!: number;
   @Column({ name: 'delivery_charge', type: 'numeric', default: 0 }) deliveryCharge!: number;
   @Column({ type: 'numeric', default: 0 }) tax!: number;
+
+  /* GST snapshot — recorded per order at checkout so a reprint always shows
+     what was actually charged, even if the rate changes later. */
+  @Column({ type: 'numeric', name: 'tax_rate', default: 0 }) taxRate!: number;
+  @Column({ type: 'numeric', default: 0 }) cgst!: number;
+  @Column({ type: 'numeric', default: 0 }) sgst!: number;
+
+  /** Sequential legal invoice number, e.g. BT/2026-27/0001. Null until GST is on. */
+  @Column({ type: 'varchar', name: 'invoice_no', nullable: true }) invoiceNo!: string | null;
   @Column({ name: 'wallet_used', type: 'numeric', default: 0 }) walletUsed!: number;
   @Column({ type: 'numeric' }) total!: number;
   @Column({ type: 'varchar', default: 'order_received' }) status!: string;

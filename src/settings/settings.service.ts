@@ -94,6 +94,15 @@ export class SettingsService {
     s.maxOrderAmount = Number(s.maxOrderAmount);
     if (s.storeLat != null) s.storeLat = Number(s.storeLat);
     if (s.storeLng != null) s.storeLng = Number(s.storeLng);
+    /* GST: numeric columns come back as strings from pg, and the columns won't
+       exist at all until the migration runs — coerce + default so an
+       un-migrated DB reads as "GST off" instead of NaN. */
+    s.gstEnabled = Boolean(s.gstEnabled ?? false);
+    s.gstRate = Number(s.gstRate ?? 5);
+    s.gstOnDelivery = Boolean(s.gstOnDelivery ?? false);
+    s.gstInclusive = s.gstInclusive === undefined || s.gstInclusive === null ? true : Boolean(s.gstInclusive);
+    s.invoicePrefix = s.invoicePrefix || 'BT';
+    s.hsnCode = s.hsnCode || '996331';
     s.deliveryRadiusKm = Number(s.deliveryRadiusKm ?? 8);
     s.avgPrepMinutes = Number(s.avgPrepMinutes ?? 20);
     s.avgRiderKmph = Number(s.avgRiderKmph ?? 20);

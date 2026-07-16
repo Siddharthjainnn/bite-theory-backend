@@ -1,6 +1,5 @@
 import {
-  IsOptional, IsNumber, Min, IsBoolean, IsString, IsObject, IsArray,
-} from 'class-validator';
+  IsOptional, IsNumber, Min, IsBoolean, IsString, IsObject, IsArray, Max } from 'class-validator';
 import { WeeklyHours, Holiday, LandingContent, InvoiceConfig } from './settings.entity';
 
 /**
@@ -55,4 +54,24 @@ export class UpdateSettingsDto {
 
   /* admin-customizable invoice / bill layout (single jsonb blob) */
   @IsOptional() @IsObject() invoiceConfig?: InvoiceConfig;
+
+  /* ── GST ── */
+  @IsOptional() @IsBoolean()
+  gstEnabled?: boolean;
+
+  /** 0-28 covers every Indian GST slab; restaurants are 5. */
+  @IsOptional() @IsNumber() @Min(0) @Max(28)
+  gstRate?: number;
+
+  @IsOptional() @IsBoolean()
+  gstOnDelivery?: boolean;
+
+  @IsOptional() @IsBoolean()
+  gstInclusive?: boolean;
+
+  @IsOptional() @IsString()
+  invoicePrefix?: string;
+
+  @IsOptional() @IsString()
+  hsnCode?: string;
 }

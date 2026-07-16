@@ -754,22 +754,33 @@ export class OrdersService {
       const orderNumber = 'BT' + Date.now().toString(36).toUpperCase() +
         Math.random().toString(36).slice(2, 5).toUpperCase();
       const total = payable;
+
+      /* GST — tax was previously hardcoded to 0 on every order, so the invoice
+         tax line (which only renders when tax > 0) never appeared. Compute it
+         from the food portion of what the customer actually pays.
+         With inclusive pricing (the Indian default) this does NOT change the
+         total — it declares how much of it was tax. Issue the legal invoice
+         number in the same transaction so it can never collide. */
+      const foodPortion = Math.max(subtotal - discount, 0);
+      const gst = this.computeGst(cfg, foodPortion, deliveryCharge);
+      const invoiceNo = await this.nextInvoiceNo(mgr, cfg);
       /* Mint the delivery OTP AT CREATION so the customer's tracking page always
          shows it, and the rider's "delivered" handoff always has something to
          match against. (Fixes the "invalid OTP" race from lazy minting.) */
       const deliveryOtp = String(Math.floor(1000 + Math.random() * 9000));
       const [order] = await mgr.query(
         `INSERT INTO orders (order_number, user_id, address_id, coupon_id, subtotal, discount,
-             delivery_charge, tax, wallet_used, total, status, delivery_slot,
+             delivery_charge, tax, tax_rate, cgst, sgst, invoice_no, wallet_used, total, status, delivery_slot,
              delivery_lat, delivery_lng, delivery_address, eta_minutes, distance_km,
              tip, delivery_instructions, cooking_note, delivery_otp)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$20,$21,$22,$23,$24,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          RETURNING *, order_number AS "orderNumber", user_id AS "userId", placed_at AS "placedAt"`,
         [orderNumber, dto.userId, dto.addressId ?? null, couponId, subtotal, discount,
          deliveryCharge, walletUsed, total, dto.deliverySlot ?? null,
          deliveryLat, deliveryLng, deliveryAddress, etaMinutes, distanceKm,
          tip, dto.deliveryInstructions?.trim() || null, dto.cookingNote?.trim() || null,
-         deliveryOtp]);
+         deliveryOtp,
+         gst.tax, gst.taxRate, gst.cgst, gst.sgst, invoiceNo]);
       const orderId = Number(order.id);
 
       /* 7) items */
@@ -1805,6 +1816,70 @@ export class OrdersService {
         failedCount,
       },
     };
+  }
+
+  /**
+   * Compute the GST on an order.
+   *
+   * Key decision — INCLUSIVE vs EXCLUSIVE:
+   *  In India, restaurant menu prices are almost always shown GST-inclusive:
+   *  a ₹100 thali costs the customer ₹100, and ₹4.76 of that IS the tax
+   *  (100 - 100/1.05). So with gstInclusive = true we EXTRACT tax from the
+   *  price rather than adding it — the customer's total does not change, we're
+   *  just declaring what portion was tax. Flipping to exclusive would silently
+   *  raise every price by 5%, which is why it defaults to inclusive.
+   *
+   * Restaurant GST (5%, no input credit) applies to FOOD, not the delivery fee
+   * — hence gstOnDelivery defaults to false.
+   *
+   * Returns zeros when GST is off, so nothing changes until you register.
+   */
+  private computeGst(cfg: any, foodAmount: number, deliveryCharge: number) {
+    if (!cfg?.gstEnabled) {
+      return { taxRate: 0, tax: 0, cgst: 0, sgst: 0 };
+    }
+    const rate = Number(cfg.gstRate ?? 5);
+    const base = Number(foodAmount) + (cfg.gstOnDelivery ? Number(deliveryCharge) : 0);
+    if (base <= 0 || rate <= 0) return { taxRate: rate, tax: 0, cgst: 0, sgst: 0 };
+
+    const tax = cfg.gstInclusive
+      ? base - base / (1 + rate / 100)   // extract from an inclusive price
+      : base * (rate / 100);             // add on top
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const total = round2(tax);
+    // CGST + SGST must sum EXACTLY to the total — halve, then derive the
+    // second half by subtraction so a rounding cent can never go missing.
+    const cgst = round2(total / 2);
+    return { taxRate: rate, tax: total, cgst, sgst: round2(total - cgst) };
+  }
+
+  /** Indian financial year for a date: Apr-Mar. 2026-07-16 -> '2026-27'. */
+  private financialYear(d = new Date()): string {
+    const y = d.getFullYear();
+    const startYear = d.getMonth() >= 3 ? y : y - 1;  // month 3 = April
+    return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
+  }
+
+  /**
+   * Issue the next invoice number in an unbroken, per-financial-year series.
+   *
+   * MUST run inside the checkout transaction with a row lock: two simultaneous
+   * checkouts using MAX()+1 would get the SAME number, and duplicate invoice
+   * numbers are a compliance failure, not just a bug.
+   */
+  private async nextInvoiceNo(mgr: any, cfg: any): Promise<string | null> {
+    if (!cfg?.gstEnabled) return null;   // no GST, no legal invoice series
+    const fy = this.financialYear();
+    const prefix = String(cfg.invoicePrefix || 'BT').toUpperCase();
+    const [row] = await mgr.query(
+      `INSERT INTO invoice_sequences (fy, last_number)
+       VALUES ($1, 1)
+       ON CONFLICT (fy) DO UPDATE
+         SET last_number = invoice_sequences.last_number + 1,
+             updated_at = now()
+       RETURNING last_number`, [fy]);
+    return `${prefix}/${fy}/${String(row.last_number).padStart(4, '0')}`;
   }
 
   async adminRefund(orderId: number, reason: string, amountRupees?: number) {
