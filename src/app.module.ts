@@ -43,6 +43,7 @@ import { SettingsModule } from './settings/settings.module';
 import { ThaliModule } from './thali/thali.module';
 import { ScratchModule } from './scratch/scratch.module';
 import { FlashModule } from './flash/flash.module';
+import { FaqModule } from './faq/faq.module';
 
 @Module({
   imports: [
@@ -99,6 +100,7 @@ import { FlashModule } from './flash/flash.module';
     ThaliModule,
     ScratchModule,
     FlashModule,
+    FaqModule,
   ],
   controllers: [AppController],
   providers: [
