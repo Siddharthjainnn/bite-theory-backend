@@ -1265,6 +1265,28 @@ export class OrdersService {
       }
     }
 
+    /* Bug #93 — the ₹3,000 COD cap was only checked when an order was
+       ASSIGNED. A rider sitting at ₹2,900 could still collect a ₹500 COD order
+       and walk away holding ₹3,400: the app showed the warning but never
+       enforced it. Check again at the moment cash actually changes hands. */
+    if (dto.status === 'delivered' && !isAdmin && order.deliveryPartnerId) {
+      const codPending = await this.dataSource.query(
+        `SELECT 1 FROM payments
+          WHERE order_id = $1 AND method = 'cod' AND status = 'pending' LIMIT 1`, [id]);
+      if (codPending.length) {
+        const cash = await this.partners.cashInHand(Number(order.deliveryPartnerId));
+        const cap = DeliveryPartnerService.cashCap();
+        const collecting = Math.max(
+          Number(order.total) - Number(order.walletUsed || 0), 0);
+        if (cash + collecting > cap) {
+          throw new BadRequestException(
+            `Cash limit reached. You are holding ₹${cash.toFixed(0)} and this ` +
+            `order adds ₹${collecting.toFixed(0)} (cap ₹${cap}). Ask the ` +
+            `customer to pay by UPI QR, or deposit your cash at the kitchen first.`);
+        }
+      }
+    }
+
     /* ── delivered gating (§4.5 OTP / §3.4 geofence) — admin key bypasses ── */
     if (dto.status === 'delivered' && !isAdmin) {
       if (order.deliveryOtp) {

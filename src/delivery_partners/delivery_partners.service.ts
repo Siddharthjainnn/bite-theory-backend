@@ -53,6 +53,26 @@ export class DeliveryPartnerService {
 
   async remove(id: number) {
     const item = await this.findOne(id);
+
+    /* Bug #92 — "Internal server error" when deleting a delivery partner.
+       Orders reference delivery_partners(id), so repo.remove() on a rider who
+       has ANY order raises a raw Postgres FK violation that surfaced as a 500.
+       Explain it instead, and offer the real alternative (deactivate). */
+    const [{ count }] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS count FROM orders WHERE delivery_partner_id = $1`,
+      [id]);
+    if (Number(count) > 0) {
+      const [{ live }] = await this.dataSource.query(
+        `SELECT COUNT(*)::int AS live FROM orders
+          WHERE delivery_partner_id = $1
+            AND status NOT IN ('delivered','cancelled')`, [id]);
+      throw new BadRequestException(
+        `${item.name} has ${count} order(s) in their history` +
+        (Number(live) > 0 ? ` (${live} still active)` : '') +
+        `. Delivery history must be kept for accounting, so this rider cannot ` +
+        `be deleted. Mark them unavailable instead to stop new assignments.`);
+    }
+
     await this.repo.remove(item);
     return { deleted: true, id };
   }
