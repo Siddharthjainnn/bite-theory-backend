@@ -24,8 +24,12 @@ CREATE INDEX IF NOT EXISTS failed_payments_unresolved_idx
 -- for a chargeback dispute months from now.
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
 
+-- NOTE: orders has NO created_at column — it uses placed_at. This migration was
+-- written by hand and never actually executed, so the mistake sat unnoticed
+-- until the migration runner tried to apply it and failed:
+--   ERROR: column "created_at" does not exist
 CREATE INDEX IF NOT EXISTS orders_not_deleted_idx
-  ON orders (created_at DESC) WHERE deleted_at IS NULL;
+  ON orders (placed_at DESC) WHERE deleted_at IS NULL;
 
 -- P0-1 defence in depth: even if application code regresses, the DATABASE
 -- refuses to walk a delivered order back to cancelled. Belt and braces on the
