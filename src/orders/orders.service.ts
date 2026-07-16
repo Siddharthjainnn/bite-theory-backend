@@ -1069,6 +1069,20 @@ export class OrdersService {
            VALUES ($1,$2,'in_app','💸 Refund initiated',$3,true)`,
           [order.userId, orderId,
            `₹${pay[0].amount} refund started (ref ${refund?.id || ''}). It usually reaches your account in 5–7 working days.`]);
+
+        /* S13 — cancellation refunds moved real money but wrote NO audit row,
+           so they were invisible to any refund report and impossible to
+           reconcile later. Log them exactly like an admin refund. */
+        await this.dataSource.query(
+          `INSERT INTO audit_logs (actor, action, entity, entity_id, details)
+           VALUES ('system', 'order.refund', 'orders', $1, $2)`,
+          [orderId, JSON.stringify({
+            amount: Number(pay[0].amount),
+            full: Number(pay[0].amount),
+            partial: false,
+            reason: 'Automatic refund on order cancellation',
+            razorpayRefundId: refund?.id ?? null,
+          })]);
       } catch (e: any) {
         // Don't block the cancellation; flag for manual follow-up instead.
         console.error(`[refund] order ${orderId} failed:`, e?.message || e);
@@ -1076,6 +1090,18 @@ export class OrdersService {
           `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
            VALUES ($1,$2,'in_app','⚠️ Refund pending','We hit a snag starting your refund automatically — our team will process it manually.',true)`,
           [order.userId, orderId]);
+
+        /* S13 — a FAILED auto-refund used to exist only in the server console.
+           Nobody could find the customer who is owed money. Record it so it
+           shows up in Admin → Refunds as needing manual action. */
+        await this.dataSource.query(
+          `INSERT INTO audit_logs (actor, action, entity, entity_id, details)
+           VALUES ('system', 'order.refund_failed', 'orders', $1, $2)`,
+          [orderId, JSON.stringify({
+            amount: Number(pay[0].amount),
+            reason: 'Automatic refund on cancellation FAILED — needs manual refund',
+            error: String(e?.message || e).slice(0, 300),
+          })]);
       }
     }
 
@@ -1680,6 +1706,86 @@ export class OrdersService {
    *
    * Idempotent: the `status = 'paid'` filter means a second call finds nothing.
    */
+  /**
+   * S13 — everything the admin needs to manage refunds in one call:
+   *   1. `refunds`   — what has ALREADY been refunded (from audit_logs, the
+   *                    money source of truth), newest first.
+   *   2. `refundable` — orders with a captured online payment that has NOT been
+   *                    refunded yet, so an admin can act without hunting.
+   *
+   * Deliberately reads audit_logs instead of introducing a refunds table: the
+   * audit row is written inside the same flow that calls Razorpay, so the list
+   * can never disagree with what actually happened.
+   */
+  async listRefunds(q?: string) {
+    const term = (q || '').trim();
+
+    const refunds = await this.dataSource.query(
+      `SELECT a.id,
+              a.entity_id                         AS "orderId",
+              o.order_number                      AS "orderNumber",
+              o.total                             AS "orderTotal",
+              o.status                            AS "orderStatus",
+              u.first_name || ' ' || COALESCE(u.last_name,'') AS "customer",
+              u.mobile                            AS "customerMobile",
+              (a.details->>'amount')::numeric     AS amount,
+              (a.details->>'partial')::boolean    AS partial,
+              a.details->>'reason'                AS reason,
+              a.details->>'razorpayRefundId'      AS "razorpayRefundId",
+              (a.action = 'order.refund_failed')  AS failed,
+              a.details->>'error'                 AS error,
+              a.actor                             AS actor,
+              a.created_at                        AS "createdAt"
+         FROM audit_logs a
+         LEFT JOIN orders o ON o.id = a.entity_id
+         LEFT JOIN users  u ON u.id = o.user_id
+        WHERE a.action IN ('order.refund', 'order.refund_failed')
+          AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%'
+                       OR u.mobile ILIKE '%' || $1 || '%'
+                       OR u.first_name ILIKE '%' || $1 || '%')
+        ORDER BY a.created_at DESC
+        LIMIT 200`, [term]);
+
+    const refundable = await this.dataSource.query(
+      `SELECT o.id                                AS "orderId",
+              o.order_number                      AS "orderNumber",
+              o.total                             AS "orderTotal",
+              o.status                            AS "orderStatus",
+              o.placed_at                         AS "placedAt",
+              u.first_name || ' ' || COALESCE(u.last_name,'') AS "customer",
+              u.mobile                            AS "customerMobile",
+              p.amount                            AS "paidAmount",
+              p.transaction_id                    AS "transactionId"
+         FROM orders o
+         JOIN payments p ON p.order_id = o.id
+                        AND p.method = 'online'
+                        AND p.status = 'paid'
+                        AND p.transaction_id IS NOT NULL
+         LEFT JOIN users u ON u.id = o.user_id
+        WHERE o.deleted_at IS NULL
+          AND ($1 = '' OR o.order_number ILIKE '%' || $1 || '%'
+                       OR u.mobile ILIKE '%' || $1 || '%'
+                       OR u.first_name ILIKE '%' || $1 || '%')
+        ORDER BY o.placed_at DESC
+        LIMIT 100`, [term]);
+
+    const totalRefunded = refunds
+      .filter((r: any) => !r.failed)
+      .reduce((sum: number, r: any) => sum + Number(r.amount || 0), 0);
+    const failedCount = refunds.filter((r: any) => r.failed).length;
+
+    return {
+      refunds,
+      refundable,
+      summary: {
+        count: refunds.length,
+        totalRefunded: Math.round(totalRefunded * 100) / 100,
+        refundableCount: refundable.length,
+        failedCount,
+      },
+    };
+  }
+
   async adminRefund(orderId: number, reason: string, amountRupees?: number) {
     const order = await this.findOne(orderId);
     if (!reason || !reason.trim()) {

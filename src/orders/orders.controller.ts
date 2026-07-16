@@ -223,6 +223,21 @@ export class OrdersController {
    * P0-1: the ONLY post-delivery refund path. Deliberate, admin-only, audited.
    * Replaces the old `delivered -> cancelled` trick that refunded eaten food.
    */
+  /**
+   * S13 — refund management list.
+   *
+   * Refunds were fully implemented server-side but INVISIBLE: there was no way
+   * to see what had been refunded, by whom, for what reason, or which orders
+   * were still refundable. Reads the audit trail (the source of truth for
+   * money movement) rather than a new table, so history is complete from day
+   * one and nothing can drift out of sync.
+   */
+  @UseGuards(AdminAuthGuard)
+  @Get('refunds/list')
+  refundsList(@Query('q') q?: string) {
+    return this.service.listRefunds(q);
+  }
+
   @UseGuards(AdminAuthGuard)
   @Roles('super_admin')
   @Post(':id/refund')
