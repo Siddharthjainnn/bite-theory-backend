@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Product } from './product.entity';
+import { AuditService } from '../audit_logs/audit.service';
 import { CreateProductDto } from './create-product.dto';
 import { UpdateProductDto } from './update-product.dto';
 
@@ -14,6 +15,7 @@ export class ProductsService {
   constructor(
     @InjectRepository(Product)
     private readonly repo: Repository<Product>,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -69,18 +71,28 @@ export class ProductsService {
   }
 
   // PATCH /products/:id
-  async update(id: number, dto: UpdateProductDto) {
+  async update(id: number, dto: UpdateProductDto, req?: any) {
     const product = await this.findOne(id);
     this.normalizeOffer(dto as any, Number(product.price));
+
+    /* Audit BEFORE mutating: a price drop from ₹250 to ₹1 is the single most
+       damaging edit in this system and it used to leave no trace at all. */
+    const before = { ...product };
     Object.assign(product, dto);
     if (dto.name) product.slug = slugify(dto.name);
-    return this.repo.save(product);
+    const saved = await this.repo.save(product);
+
+    await this.audit.logUpdate('products', id, before, dto as any, req,
+      ['name', 'price', 'offerPrice', 'status', 'categoryId', 'isTodaysSpecial', 'isVeg']);
+    return saved;
   }
 
   // DELETE /products/:id
-  async remove(id: number) {
+  async remove(id: number, req?: any) {
     const product = await this.findOne(id);
     await this.repo.remove(product);
+    await this.audit.log('product.delete', 'products', id,
+      { name: product.name, price: product.price }, req);
     return { deleted: true, id };
   }
 }
