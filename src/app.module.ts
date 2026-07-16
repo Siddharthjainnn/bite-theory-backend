@@ -8,6 +8,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AdminWriteGuard } from './common/admin-write.guard';
+import { AdminSectionGuard } from './common/admin-section.guard';
 
 // existing modules
 import { CategoriesModule } from './categories/categories.module';
@@ -103,6 +104,10 @@ import { FlashModule } from './flash/flash.module';
   providers: [
     AppService,
     { provide: APP_GUARD, useClass: AdminWriteGuard },
+    /* Real server-side enforcement of Admin → Roles & Access. Without this the
+       role config only hid sidebar buttons: a kitchen manager could still call
+       /api/payments directly. Reads the same roles.sections rows the UI edits. */
+    { provide: APP_GUARD, useClass: AdminSectionGuard },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
