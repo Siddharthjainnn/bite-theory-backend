@@ -9,7 +9,10 @@ export const ORDER_STATUSES = ['order_received', 'order_confirmed', 'preparing_f
 
 export class CheckoutItemDto {
   @IsNumber() productId!: number;
-  @IsNumber() @Min(1) quantity!: number;
+  /* Suggestion #11 — quantity had a floor but no ceiling. The client caps at
+     20 for feedback; THIS is the cap that actually protects the kitchen, since
+     a crafted request bypasses the UI entirely. */
+  @IsNumber() @Min(1) @Max(20) quantity!: number;
 }
 
 /** Swiggy-style checkout: server computes prices, discount, totals. */
