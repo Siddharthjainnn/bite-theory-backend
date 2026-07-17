@@ -165,6 +165,24 @@ export class StoreSettings {
   @Column({ type: 'varchar', name: 'bhaiya_intro_frequency', default: 'daily' })
   bhaiyaIntroFrequency: string;
 
+  /* ── Wallet presentation (2026-07-17-offers-engine.sql) ──
+     LEGAL: under RBI's PPI rules, letting customers load their OWN money into
+     a wallet makes it a regulated prepaid instrument (licence + KYC + escrow).
+     This balance is gift-only — refunds, referrals and admin credit, with no
+     top-up path anywhere — so the mechanic is already compliant. The risk is
+     the WORDING: showing "₹500" implies stored customer money. Relabelling to
+     e.g. "Bite Coins" presents it as the loyalty scheme it actually is. */
+  @Column({ type: 'varchar', name: 'wallet_label', default: 'Wallet' })
+  walletLabel: string;
+
+  /** Display unit — '₹' or e.g. 'Coins'. Purely cosmetic; math is unchanged. */
+  @Column({ type: 'varchar', name: 'wallet_unit', default: '₹' })
+  walletUnit: string;
+
+  /** Shown on the wallet screen — the disclaimer that keeps this a reward. */
+  @Column({ type: 'varchar', name: 'wallet_note', nullable: true })
+  walletNote: string;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

@@ -45,6 +45,7 @@ import { ScratchModule } from './scratch/scratch.module';
 import { FlashModule } from './flash/flash.module';
 import { FaqModule } from './faq/faq.module';
 import { ReportsModule } from './reports/reports.module';
+import { OffersModule } from './offers/offers.module';
 
 @Module({
   imports: [
@@ -103,6 +104,7 @@ import { ReportsModule } from './reports/reports.module';
     FlashModule,
     FaqModule,
     ReportsModule,
+    OffersModule,
   ],
   controllers: [AppController],
   providers: [

@@ -81,4 +81,14 @@ export class UpdateSettingsDto {
 
   @IsOptional() @IsIn(['daily', 'once', 'always'])
   bhaiyaIntroFrequency?: string;
+
+  /* ── Wallet presentation (legal framing — see settings.entity.ts) ── */
+  @IsOptional() @IsString()
+  walletLabel?: string;
+
+  @IsOptional() @IsString()
+  walletUnit?: string;
+
+  @IsOptional() @IsString()
+  walletNote?: string;
 }

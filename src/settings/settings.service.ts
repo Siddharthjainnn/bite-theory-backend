@@ -99,6 +99,10 @@ export class SettingsService {
        un-migrated DB reads as "GST off" instead of NaN. */
     /* Bhaiya intro: default ON so behaviour is unchanged until an admin
        deliberately turns it off. Also survives an un-migrated DB. */
+    s.walletLabel = s.walletLabel || 'Wallet';
+    s.walletUnit = s.walletUnit || '₹';
+    s.walletNote = s.walletNote
+      || 'Credits are issued by Bite Theory as rewards and refunds. They can only be used against orders and cannot be withdrawn or transferred.';
     s.bhaiyaIntroEnabled = s.bhaiyaIntroEnabled === undefined || s.bhaiyaIntroEnabled === null
       ? true : Boolean(s.bhaiyaIntroEnabled);
     s.bhaiyaIntroFrequency = s.bhaiyaIntroFrequency || 'daily';
