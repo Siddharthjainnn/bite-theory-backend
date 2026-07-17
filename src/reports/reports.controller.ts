@@ -83,6 +83,42 @@ export class ReportsController {
   @Get('cancellations')
   cancellations(@Query() q: any) { return this.service.cancellations(this.filters(q)); }
 
+  /* ── the reports you run the business on ── */
+
+  /** Where the money lives — orders/revenue by pincode. */
+  @Get('areas')
+  areas(@Query() q: any) { return this.service.salesByArea(this.filters(q)); }
+
+  /** What sells vs what disappoints — ratings per dish. */
+  @Get('item-ratings')
+  itemRatings(@Query() q: any) { return this.service.itemRatings(this.filters(q)); }
+
+  @Get('rating-trend')
+  ratingTrend(@Query() q: any) { return this.service.ratingTrend(this.filters(q)); }
+
+  /** WHERE the minutes go — dwell time per status. */
+  @Get('bottlenecks')
+  bottlenecks(@Query() q: any) { return this.service.statusDwellTimes(this.filters(q)); }
+
+  /** Low/out of stock right now. */
+  @Get('stock')
+  stock() { return this.service.stockReport(); }
+
+  /** Wallet as a liability — money you still owe in food. */
+  @Get('wallet')
+  wallet(@Query() q: any) { return this.service.walletReport(this.filters(q)); }
+
+  @Get('support')
+  support(@Query() q: any) { return this.service.supportReport(this.filters(q)); }
+
+  /** Monthly retention cohorts — the most honest number you have. */
+  @Get('cohorts')
+  cohorts() { return this.service.cohorts(); }
+
+  /** How much margin is leaking out as discounts. */
+  @Get('discount-leakage')
+  discountLeakage(@Query() q: any) { return this.service.discountLeakage(this.filters(q)); }
+
   /** Flat, wide rows for CSV/Excel — pivot it yourself, no dev needed. */
   @Get('export/orders')
   exportOrders(@Query() q: any) {

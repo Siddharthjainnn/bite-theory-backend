@@ -408,6 +408,236 @@ export class ReportsService {
     return this.dataSource.query(sql, params);
   }
 
+  /* ═══════════════ 9. GEOGRAPHY — where the money lives ═══════════════ */
+
+  /**
+   * Orders by pincode/area. This is the report that decides where you open a
+   * second kitchen, where to run local ads, and which areas are quietly
+   * unprofitable because every order is 8km away.
+   */
+  async salesByArea(f: ReportFilters) {
+    const w = this.where(f, { deliveredOnly: true });
+    return this.dataSource.query(
+      `SELECT COALESCE(NULLIF(TRIM(a.pincode), ''), 'Unknown') AS pincode,
+              COALESCE(NULLIF(TRIM(a.city), ''), '—')          AS city,
+              COUNT(*)::int                                    AS orders,
+              COUNT(DISTINCT o.user_id)::int                   AS customers,
+              ROUND(SUM(o.total), 2)                           AS revenue,
+              ROUND(AVG(o.total), 2)                           AS "avgOrder",
+              ROUND(AVG(o.distance_km)::numeric, 2)            AS "avgDistanceKm",
+              ROUND(AVG(EXTRACT(EPOCH FROM (o.delivered_at - o.picked_up_at))/60)::numeric, 1)
+                                                               AS "avgDeliveryMins"
+         FROM orders o
+         LEFT JOIN addresses a ON a.id = o.address_id
+        WHERE ${w.sql}
+        GROUP BY pincode, city
+        ORDER BY revenue DESC`, w.params);
+  }
+
+  /* ═══════════════ 10. QUALITY — what customers think ═══════════════ */
+
+  /**
+   * Ratings per dish. Pair this with topItems and you get the two questions
+   * that matter: what sells, and what sells but disappoints. A 4.9-rated dish
+   * nobody orders is a marketing problem; a 2.1-rated bestseller is a
+   * reputation time-bomb.
+   */
+  async itemRatings(f: ReportFilters) {
+    const conds = ['1=1']; const params: any[] = []; let i = 1;
+    if (f.from) { conds.push(`r.created_at >= $${i++}`); params.push(f.from); }
+    if (f.to) { conds.push(`r.created_at < ($${i++}::date + INTERVAL '1 day')`); params.push(f.to); }
+
+    return this.dataSource.query(
+      `SELECT p.id AS "productId", p.name AS "productName", c.name AS category,
+              COUNT(*)::int                                  AS reviews,
+              ROUND(AVG(r.rating)::numeric, 2)               AS "avgRating",
+              COUNT(*) FILTER (WHERE r.rating <= 2)::int     AS unhappy,
+              COUNT(*) FILTER (WHERE r.rating >= 4)::int     AS happy
+         FROM reviews r
+         JOIN products p ON p.id = r.product_id
+         LEFT JOIN categories c ON c.id = p.category_id
+        WHERE ${conds.join(' AND ')}
+        GROUP BY p.id, p.name, c.name
+        ORDER BY "avgRating" ASC, reviews DESC`, params);
+  }
+
+  /** Ratings trend — is quality drifting? */
+  async ratingTrend(f: ReportFilters) {
+    const conds = ['1=1']; const params: any[] = []; let i = 1;
+    if (f.from) { conds.push(`r.created_at >= $${i++}`); params.push(f.from); }
+    if (f.to) { conds.push(`r.created_at < ($${i++}::date + INTERVAL '1 day')`); params.push(f.to); }
+    return this.dataSource.query(
+      `SELECT to_char(r.created_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS day,
+              COUNT(*)::int AS reviews,
+              ROUND(AVG(r.rating)::numeric, 2) AS "avgRating"
+         FROM reviews r WHERE ${conds.join(' AND ')}
+        GROUP BY day ORDER BY day`, params);
+  }
+
+  /* ═══════════════ 11. KITCHEN BOTTLENECKS ═══════════════ */
+
+  /**
+   * How long orders sit in EACH status, from order_status_history.
+   *
+   * "Average delivery took 42 minutes" is useless on its own — you can't fix
+   * an average. This says WHERE the 42 minutes went: 6 min unconfirmed, 24 in
+   * the kitchen, 3 waiting for a rider, 9 on the road. Now you know whether to
+   * hire a cook or a rider.
+   */
+  async statusDwellTimes(f: ReportFilters) {
+    const w = this.where(f, { deliveredOnly: true });
+    return this.dataSource.query(
+      `WITH steps AS (
+         SELECT h.order_id, h.status, h.created_at,
+                LEAD(h.created_at) OVER (PARTITION BY h.order_id ORDER BY h.created_at) AS next_at
+           FROM order_status_history h
+           JOIN orders o ON o.id = h.order_id
+          WHERE ${w.sql})
+       SELECT status,
+              COUNT(*)::int AS orders,
+              ROUND(AVG(EXTRACT(EPOCH FROM (next_at - created_at))/60)::numeric, 1) AS "avgMins",
+              ROUND(PERCENTILE_CONT(0.9) WITHIN GROUP (
+                ORDER BY EXTRACT(EPOCH FROM (next_at - created_at))/60)::numeric, 1) AS "p90Mins"
+         FROM steps
+        WHERE next_at IS NOT NULL
+        GROUP BY status
+        ORDER BY "avgMins" DESC`, w.params);
+  }
+
+  /* ═══════════════ 12. INVENTORY ═══════════════ */
+
+  /** What's about to run out — and what that costs you in lost sales. */
+  async stockReport() {
+    return this.dataSource.query(
+      `SELECT p.id AS "productId", p.name AS "productName", c.name AS category,
+              i.quantity::int, i.low_threshold::int AS "lowThreshold",
+              i.stock_status AS "stockStatus", p.status AS "productStatus",
+              p.price
+         FROM inventory i
+         JOIN products p ON p.id = i.product_id
+         LEFT JOIN categories c ON c.id = p.category_id
+        WHERE i.stock_status <> 'in_stock' OR i.quantity <= i.low_threshold
+        ORDER BY i.quantity ASC`);
+  }
+
+  /* ═══════════════ 13. WALLET LEDGER ═══════════════ */
+
+  /**
+   * Wallet is a LIABILITY — money customers have already given you (or you
+   * gifted) that you still owe them in food. Owners routinely forget this
+   * exists until it's a large number.
+   */
+  async walletReport(f: ReportFilters) {
+    const conds = ['1=1']; const params: any[] = []; let i = 1;
+    if (f.from) { conds.push(`w.created_at >= $${i++}`); params.push(f.from); }
+    if (f.to) { conds.push(`w.created_at < ($${i++}::date + INTERVAL '1 day')`); params.push(f.to); }
+
+    const [flow] = await this.dataSource.query(
+      `SELECT ROUND(COALESCE(SUM(w.amount) FILTER (WHERE w.type='credit'),0),2) AS "creditsIssued",
+              ROUND(COALESCE(SUM(w.amount) FILTER (WHERE w.type='debit'),0),2)  AS "creditsSpent",
+              COUNT(*)::int AS entries
+         FROM wallet_transactions w WHERE ${conds.join(' AND ')}`, params);
+
+    const [liability] = await this.dataSource.query(
+      `SELECT ROUND(COALESCE(SUM(wallet_balance),0),2) AS "outstandingLiability",
+              COUNT(*) FILTER (WHERE wallet_balance > 0)::int AS "customersWithBalance"
+         FROM users`);
+
+    const byReason = await this.dataSource.query(
+      `SELECT w.type, COALESCE(NULLIF(TRIM(w.reason),''),'—') AS reason,
+              COUNT(*)::int AS entries, ROUND(SUM(w.amount),2) AS amount
+         FROM wallet_transactions w WHERE ${conds.join(' AND ')}
+        GROUP BY w.type, reason ORDER BY amount DESC LIMIT 20`, params);
+
+    return { ...flow, ...liability, byReason };
+  }
+
+  /* ═══════════════ 14. SUPPORT LOAD ═══════════════ */
+
+  /** How much support your operation generates — and how fast you close it. */
+  async supportReport(f: ReportFilters) {
+    const conds = ['1=1']; const params: any[] = []; let i = 1;
+    if (f.from) { conds.push(`t.created_at >= $${i++}`); params.push(f.from); }
+    if (f.to) { conds.push(`t.created_at < ($${i++}::date + INTERVAL '1 day')`); params.push(f.to); }
+
+    const [totals] = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS tickets,
+              COUNT(*) FILTER (WHERE t.status = 'open')::int AS open,
+              COUNT(*) FILTER (WHERE t.status = 'resolved')::int AS resolved,
+              ROUND(AVG(EXTRACT(EPOCH FROM (t.updated_at - t.created_at))/3600)
+                    FILTER (WHERE t.status = 'resolved')::numeric, 1) AS "avgResolveHours"
+         FROM support_tickets t WHERE ${conds.join(' AND ')}`, params);
+
+    const byDay = await this.dataSource.query(
+      `SELECT to_char(t.created_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS day,
+              COUNT(*)::int AS tickets
+         FROM support_tickets t WHERE ${conds.join(' AND ')}
+        GROUP BY day ORDER BY day`, params);
+
+    return { ...totals, byDay };
+  }
+
+  /* ═══════════════ 15. CUSTOMER RETENTION (COHORTS) ═══════════════ */
+
+  /**
+   * Monthly cohorts: of the customers who first ordered in month X, how many
+   * came back in the months after?
+   *
+   * This is the single most honest measure of whether the food is good. Every
+   * other number can be bought with discounts; retention cannot.
+   */
+  async cohorts() {
+    return this.dataSource.query(
+      `WITH firsts AS (
+         SELECT user_id,
+                date_trunc('month', MIN(placed_at) AT TIME ZONE 'Asia/Kolkata') AS cohort
+           FROM orders WHERE status='delivered' AND deleted_at IS NULL
+          GROUP BY user_id),
+       activity AS (
+         SELECT o.user_id, f.cohort,
+                date_trunc('month', o.placed_at AT TIME ZONE 'Asia/Kolkata') AS month
+           FROM orders o JOIN firsts f ON f.user_id = o.user_id
+          WHERE o.status='delivered' AND o.deleted_at IS NULL
+          GROUP BY o.user_id, f.cohort, month)
+       SELECT to_char(cohort,'YYYY-MM') AS cohort,
+              (EXTRACT(YEAR FROM age(month, cohort))*12
+               + EXTRACT(MONTH FROM age(month, cohort)))::int AS "monthsLater",
+              COUNT(DISTINCT user_id)::int AS customers
+         FROM activity
+        GROUP BY cohort, "monthsLater"
+        ORDER BY cohort DESC, "monthsLater"
+        LIMIT 200`);
+  }
+
+  /* ═══════════════ 16. DISCOUNT LEAKAGE ═══════════════ */
+
+  /**
+   * The uncomfortable report: how much margin you're giving away, and to whom.
+   * Discounts feel free because they're not a line item in your bank account —
+   * they're revenue that never arrived.
+   */
+  async discountLeakage(f: ReportFilters) {
+    const w = this.where(f, { deliveredOnly: true });
+    const [row] = await this.dataSource.query(
+      `SELECT ROUND(COALESCE(SUM(o.subtotal),0),2)                       AS "grossValue",
+              ROUND(COALESCE(SUM(o.discount),0),2)                       AS "couponDiscounts",
+              ROUND(COALESCE(SUM(o.wallet_used),0),2)                    AS "walletUsed",
+              ROUND(COALESCE(SUM(o.total),0),2)                          AS "netCollected",
+              COUNT(*) FILTER (WHERE o.discount > 0)::int                AS "discountedOrders",
+              COUNT(*)::int                                              AS orders
+         FROM orders o WHERE ${w.sql}`, w.params);
+
+    const gross = Number(row.grossValue) || 0;
+    const given = Number(row.couponDiscounts) || 0;
+    return {
+      ...row,
+      discountRate: gross ? Math.round((given / gross) * 1000) / 10 : 0,
+      discountedShare: row.orders
+        ? Math.round((row.discountedOrders / row.orders) * 1000) / 10
+        : 0,
+    };
+  }
+
   /** Everything the dashboard needs, in ONE round trip. */
   async dashboard(f: ReportFilters) {
     const [summary, byDay, byHour, byWeekday, topItems, categories,
