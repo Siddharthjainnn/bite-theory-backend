@@ -154,6 +154,17 @@ export class StoreSettings {
   @Column({ type: 'varchar', name: 'hsn_code', nullable: true })
   hsnCode: string;
 
+  /* ── Ask Bhaiya intro (2026-07-17-bhaiya-intro-toggle.sql) ──
+     Controls only the AUTOMATIC goal-picker popup on the home page. The
+     "Ask Bhaiya" button in the header always works, so turning this off makes
+     the feature opt-in rather than removing it. */
+  @Column({ type: 'boolean', name: 'bhaiya_intro_enabled', default: true })
+  bhaiyaIntroEnabled: boolean;
+
+  /** 'daily' | 'once' | 'always' — how often it may re-appear per customer. */
+  @Column({ type: 'varchar', name: 'bhaiya_intro_frequency', default: 'daily' })
+  bhaiyaIntroFrequency: string;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

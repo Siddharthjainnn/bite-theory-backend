@@ -1,5 +1,5 @@
 import {
-  IsOptional, IsNumber, Min, IsBoolean, IsString, IsObject, IsArray, Max } from 'class-validator';
+  IsOptional, IsNumber, Min, IsBoolean, IsString, IsObject, IsArray, Max, IsIn } from 'class-validator';
 import { WeeklyHours, Holiday, LandingContent, InvoiceConfig } from './settings.entity';
 
 /**
@@ -74,4 +74,11 @@ export class UpdateSettingsDto {
 
   @IsOptional() @IsString()
   hsnCode?: string;
+
+  /* ── Ask Bhaiya intro ── */
+  @IsOptional() @IsBoolean()
+  bhaiyaIntroEnabled?: boolean;
+
+  @IsOptional() @IsIn(['daily', 'once', 'always'])
+  bhaiyaIntroFrequency?: string;
 }

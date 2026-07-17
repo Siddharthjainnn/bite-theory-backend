@@ -97,6 +97,11 @@ export class SettingsService {
     /* GST: numeric columns come back as strings from pg, and the columns won't
        exist at all until the migration runs — coerce + default so an
        un-migrated DB reads as "GST off" instead of NaN. */
+    /* Bhaiya intro: default ON so behaviour is unchanged until an admin
+       deliberately turns it off. Also survives an un-migrated DB. */
+    s.bhaiyaIntroEnabled = s.bhaiyaIntroEnabled === undefined || s.bhaiyaIntroEnabled === null
+      ? true : Boolean(s.bhaiyaIntroEnabled);
+    s.bhaiyaIntroFrequency = s.bhaiyaIntroFrequency || 'daily';
     s.gstEnabled = Boolean(s.gstEnabled ?? false);
     s.gstRate = Number(s.gstRate ?? 5);
     s.gstOnDelivery = Boolean(s.gstOnDelivery ?? false);
