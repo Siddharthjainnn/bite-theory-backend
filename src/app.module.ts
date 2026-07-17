@@ -44,6 +44,7 @@ import { ThaliModule } from './thali/thali.module';
 import { ScratchModule } from './scratch/scratch.module';
 import { FlashModule } from './flash/flash.module';
 import { FaqModule } from './faq/faq.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -101,6 +102,7 @@ import { FaqModule } from './faq/faq.module';
     ScratchModule,
     FlashModule,
     FaqModule,
+    ReportsModule,
   ],
   controllers: [AppController],
   providers: [
