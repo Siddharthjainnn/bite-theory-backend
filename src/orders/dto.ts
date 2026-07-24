@@ -69,6 +69,10 @@ export class CreatePaymentDto {
 
 export class CancelOrderDto {
   @IsNumber() userId!: number;
+  /* Bug #99 — customer chooses where an online payment is refunded:
+     'original' (Razorpay refund to the paying instrument) or 'wallet'
+     (instant store-wallet credit). Defaults to 'original'. */
+  @IsOptional() @IsIn(['original', 'wallet']) refundTo?: 'original' | 'wallet';
 }
 
 /** Admin attaches / clears the "food being made" clip on a specific order. */
@@ -110,6 +114,9 @@ export class UpdateOrderStatusDto {
   @IsOptional() @IsString() @MaxLength(4) otp?: string;
   @IsOptional() @Type(() => Number) @IsNumber() riderLat?: number;
   @IsOptional() @Type(() => Number) @IsNumber() riderLng?: number;
+  /* #99: carried through a customer cancel so refundOnCancel knows where the
+     money should go. Ignored for every other status. */
+  @IsOptional() @IsIn(['original', 'wallet']) refundTo?: 'original' | 'wallet';
 }
 
 /** P0-1: admin-only post-delivery refund. Reason is mandatory — it's audited. */

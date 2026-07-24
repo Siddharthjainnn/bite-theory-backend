@@ -106,7 +106,7 @@ export class OrdersController {
     @Req() req: Request & { authUserId?: number },
   ) {
     this.assertOwner(req, Number(dto.userId));
-    return this.service.cancelByCustomer(id, Number(dto.userId));
+    return this.service.cancelByCustomer(id, Number(dto.userId), dto.refundTo);
   }
 
   @Get() findAll(

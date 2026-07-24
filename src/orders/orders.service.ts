@@ -247,7 +247,17 @@ export class OrdersService {
               thali_config AS "thaliConfig"
          FROM order_items WHERE order_id = $1 ORDER BY id`, [id]);
     const history = await this.getHistory(id);
-    return { ...order, items, history };
+    /* Bug #98 — the detail/track payload never carried the payment method or
+       status, so the app's label logic fell through to "Paid" on fresh COD
+       orders. Attach both from the payment row. */
+    const pay = await this.dataSource.query(
+      `SELECT method, status FROM payments WHERE order_id = $1
+        ORDER BY id DESC LIMIT 1`, [id]);
+    return {
+      ...order, items, history,
+      paymentMethod: pay[0]?.method ?? null,
+      paymentStatus: pay[0]?.status ?? null,
+    };
   }
 
   /** Ownership-checked order read (customer sees only their own; admin sees all). */
@@ -434,6 +444,28 @@ export class OrdersService {
     for (const ti of input.thaliItems || []) {
       const pc = await this.thali.priceCheck(Number(ti.templateId), ti.selections || []);
       subtotal += pc.total;
+    }
+
+    /* Bug #89 — stock was only checked at final checkout, AFTER an online
+       customer had already paid: money captured, order rejected, support
+       ticket. Check availability here too, BEFORE a Razorpay order is ever
+       opened, with a message that names the dish. */
+    if (ids.length) {
+      const inv = await this.dataSource.query(
+        `SELECT product_id, quantity, stock_status FROM inventory
+          WHERE product_id = ANY($1)`, [ids]);
+      const invBy = new Map<number, any>(inv.map((r: any) => [Number(r.product_id), r]));
+      for (const i of input.items || []) {
+        const row = invBy.get(Number(i.productId));
+        if (!row) continue; // untracked item — allow
+        if (row.stock_status === 'out_of_stock' || Number(row.quantity) < i.quantity) {
+          const p = byId.get(Number(i.productId));
+          throw new BadRequestException(
+            `"${p?.name || 'An item'}" is ${row.stock_status === 'out_of_stock'
+              ? 'sold out' : `down to ${Math.max(0, Number(row.quantity))} left`}. ` +
+            `Please update your cart before paying.`);
+        }
+      }
     }
 
     let discount = 0;
@@ -1042,7 +1074,7 @@ export class OrdersService {
    * started cooking. Ownership is enforced (userId must match), and the
    * cancel path triggers the same refund logic as an admin cancel.
    */
-  async cancelByCustomer(orderId: number, userId: number) {
+  async cancelByCustomer(orderId: number, userId: number, refundTo?: 'original' | 'wallet') {
     const order = await this.findOne(orderId);
     if (Number(order.userId) !== Number(userId)) {
       throw new BadRequestException('This order does not belong to you.');
@@ -1053,7 +1085,8 @@ export class OrdersService {
         'This order is already being prepared and can no longer be cancelled. Please contact support.',
       );
     }
-    return this.updateStatus(orderId, { status: 'cancelled', note: 'Cancelled by customer' }, false, true);
+    return this.updateStatus(orderId,
+      { status: 'cancelled', note: 'Cancelled by customer', refundTo } as any, false, true);
   }
 
   /**
@@ -1062,7 +1095,7 @@ export class OrdersService {
    *  - wallet portion     → credited back to the wallet
    * Idempotent: checks current payment status / existing wallet credit first.
    */
-  private async refundOnCancel(orderId: number) {
+  private async refundOnCancel(orderId: number, refundTo: 'original' | 'wallet' = 'original') {
     const order = await this.findOne(orderId);
 
     // 1) online refund via Razorpay
@@ -1070,7 +1103,37 @@ export class OrdersService {
       `SELECT id, amount, transaction_id FROM payments
         WHERE order_id = $1 AND method = 'online' AND status = 'paid'
           AND transaction_id IS NOT NULL LIMIT 1`, [orderId]);
-    if (pay.length) {
+
+    /* Bug #99 — the customer can now choose an INSTANT wallet credit instead
+       of a 5–7 day Razorpay reversal. The money stays with the store as
+       wallet balance, which most customers actually prefer for speed. Same
+       idempotency contract as the Razorpay path: the payment row flips to
+       'refunded' exactly once, so re-entry can't double-credit. */
+    if (pay.length && refundTo === 'wallet') {
+      const amt = Number(pay[0].amount);
+      await this.dataSource.query(
+        `UPDATE payments SET status = 'refunded' WHERE id = $1`, [pay[0].id]);
+      await this.dataSource.query(
+        `UPDATE users SET wallet_balance = COALESCE(wallet_balance,0) + $1, updated_at = now()
+          WHERE id = $2`, [amt, order.userId]);
+      await this.dataSource.query(
+        `INSERT INTO wallet_transactions (user_id, type, amount, reason, order_id)
+         VALUES ($1,'credit',$2,$3,$4)`,
+        [order.userId, amt, `Refund to wallet — cancelled order ${order.orderNumber}`, orderId]);
+      await this.dataSource.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app','💸 Refund credited to wallet',$3,true)`,
+        [order.userId, orderId,
+         `₹${amt} is already in your wallet — use it on your next order.`]);
+      await this.dataSource.query(
+        `INSERT INTO audit_logs (actor, action, entity, entity_id, details)
+         VALUES ('system', 'order.refund', 'orders', $1, $2)`,
+        [orderId, JSON.stringify({
+          amount: amt, full: amt, partial: false,
+          reason: 'Cancellation refund credited to wallet (customer choice)',
+          destination: 'wallet',
+        })]);
+    } else if (pay.length) {
       try {
         const refund = await this.razorpay.refundPayment(pay[0].transaction_id, Number(pay[0].amount));
         await this.dataSource.query(
@@ -1458,7 +1521,7 @@ export class OrdersService {
        cancellation notice, so the timeline reads:
          1) ❌ Order cancelled   2) 💸 Refund initiated */
     if (dto.status === 'cancelled') {
-      await this.refundOnCancel(id);
+      await this.refundOnCancel(id, (dto as any).refundTo);
     }
     return saved;
   }

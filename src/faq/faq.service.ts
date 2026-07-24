@@ -76,14 +76,34 @@ export class FaqService {
     if (!exists) throw new NotFoundException('That help article no longer exists.');
 
     if (userId) {
-      await this.dataSource.query(
-        `INSERT INTO faq_feedback (article_id, user_id, helpful, comment)
-         VALUES ($1,$2,$3,$4)
-         ON CONFLICT (article_id, user_id) WHERE user_id IS NOT NULL
-         DO UPDATE SET helpful = EXCLUDED.helpful,
-                       comment = EXCLUDED.comment,
-                       created_at = now()`,
-        [articleId, userId, dto.helpful, dto.comment ?? null]);
+      /* Bug #100 — admin's 👍/👎 counts stayed at 0. The upsert's ON CONFLICT
+         target requires the partial unique index from the FAQ migration; on a
+         database where that migration hasn't run, the INSERT throws, the app
+         swallows it, and no vote is ever recorded. Fall back to a manual
+         update-then-insert so votes land on every environment (and the error
+         is logged instead of vanishing). */
+      try {
+        await this.dataSource.query(
+          `INSERT INTO faq_feedback (article_id, user_id, helpful, comment)
+           VALUES ($1,$2,$3,$4)
+           ON CONFLICT (article_id, user_id) WHERE user_id IS NOT NULL
+           DO UPDATE SET helpful = EXCLUDED.helpful,
+                         comment = EXCLUDED.comment,
+                         created_at = now()`,
+          [articleId, userId, dto.helpful, dto.comment ?? null]);
+      } catch (e: any) {
+        console.error('[faq.feedback] upsert failed, using fallback:', e?.message || e);
+        const upd = await this.dataSource.query(
+          `UPDATE faq_feedback SET helpful = $3, comment = $4, created_at = now()
+            WHERE article_id = $1 AND user_id = $2 RETURNING id`,
+          [articleId, userId, dto.helpful, dto.comment ?? null]);
+        if (!upd.length) {
+          await this.dataSource.query(
+            `INSERT INTO faq_feedback (article_id, user_id, helpful, comment)
+             VALUES ($1,$2,$3,$4)`,
+            [articleId, userId, dto.helpful, dto.comment ?? null]);
+        }
+      }
     } else {
       await this.dataSource.query(
         `INSERT INTO faq_feedback (article_id, user_id, helpful, comment)
