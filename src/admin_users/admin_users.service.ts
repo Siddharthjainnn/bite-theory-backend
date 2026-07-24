@@ -8,12 +8,14 @@ import { AdminUser } from './admin-user.entity';
 import { signAdminJwt } from '../common/admin-auth.guard';
 import { CreateAdminUserDto } from './create-admin-user.dto';
 import { UpdateAdminUserDto } from './update-admin-user.dto';
+import { MailService } from '../common/mail.service';
 
 @Injectable()
 export class AdminUserService {
   constructor(
     @InjectRepository(AdminUser)
     private readonly repo: Repository<AdminUser>,
+    private readonly mail: MailService,
   ) {}
 
   findAll() {
@@ -89,6 +91,62 @@ export class AdminUserService {
     });
     const saved = await this.repo.save(admin);
     return { ok: true, id: saved.id, email: saved.email };
+  }
+
+  /* ── Bug #4: forgot / reset password ─────────────────────────────────
+     forgot(): mints a 6-digit code (15-min expiry) and emails it. The reply
+     is IDENTICAL whether the email exists or not, so this can't be used to
+     probe which addresses have admin accounts.
+     reset(): verifies email+code, sets the new bcrypt hash, clears the code. */
+  async forgot(email: string) {
+    const generic = { ok: true, message: 'If that email has an admin account, a reset code has been sent.' };
+    if (!email?.trim()) return generic;
+    const admin = await this.repo
+      .createQueryBuilder('a')
+      .where('LOWER(a.email) = LOWER(:email)', { email: email.trim() })
+      .getOne();
+    if (!admin || admin.isActive === false) return generic;
+    if (!this.mail.isReady) {
+      // Be honest with the ONE case where silence would strand the admin:
+      // the server simply cannot send email at all.
+      throw new BadRequestException(
+        'Password reset emails are not configured on this server (SMTP env vars missing). Ask a super admin to reset your password.');
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    admin.resetCode = code;
+    admin.resetExpires = new Date(Date.now() + 15 * 60 * 1000);
+    await this.repo.save(admin);
+    this.mail.send(
+      admin.email,
+      'Bites Theory admin — password reset code',
+      `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto">
+         <h2 style="color:#0D3B2E">Password reset</h2>
+         <p>Use this code to set a new admin password. It expires in 15 minutes.</p>
+         <div style="font-size:30px;font-weight:800;letter-spacing:8px;color:#0D3B2E">${code}</div>
+         <p style="color:#888;font-size:12px">Didn't request this? You can ignore this email.</p>
+       </div>`,
+    );
+    return generic;
+  }
+
+  async resetPassword(email: string, code: string, newPassword: string) {
+    if (!email?.trim() || !code?.trim()) throw new BadRequestException('Email and code are required');
+    if ((newPassword || '').length < 8) {
+      throw new BadRequestException('New password must be at least 8 characters');
+    }
+    const admin = await this.repo
+      .createQueryBuilder('a')
+      .where('LOWER(a.email) = LOWER(:email)', { email: email.trim() })
+      .getOne();
+    const valid = admin && admin.isActive !== false
+      && admin.resetCode && admin.resetCode === code.trim()
+      && admin.resetExpires && new Date(admin.resetExpires).getTime() > Date.now();
+    if (!valid) throw new BadRequestException('Invalid or expired reset code');
+    admin.passwordHash = await bcrypt.hash(newPassword, 10);
+    admin.resetCode = null;
+    admin.resetExpires = null;
+    await this.repo.save(admin);
+    return { ok: true, message: 'Password updated — you can sign in now.' };
   }
 
   async findOne(id: number) {

@@ -26,4 +26,10 @@ export class AdminUser {
   @Column({ type: 'timestamptz', name: 'created_at', nullable: true })
   createdAt: Date;
 
+  /* Bug #4 — forgot-password: 6-digit code emailed to the admin, valid 15m. */
+  @Column({ type: 'varchar', name: 'reset_code', nullable: true })
+  resetCode: string | null;
+
+  @Column({ type: 'timestamptz', name: 'reset_expires', nullable: true })
+  resetExpires: Date | null;
 }

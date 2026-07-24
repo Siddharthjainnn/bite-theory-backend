@@ -50,6 +50,21 @@ export class AdminUserController {
     return this.service.login(body.email, body.password);
   }
 
+  /* Bug #4 — self-serve password reset (code by email). Public but
+     throttled; forgot() never reveals whether the email exists. */
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot')
+  forgot(@Body() body: { email: string }) {
+    return this.service.forgot(String(body?.email || ''));
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('reset')
+  reset(@Body() body: { email: string; code: string; password: string }) {
+    return this.service.resetPassword(
+      String(body?.email || ''), String(body?.code || ''), String(body?.password || ''));
+  }
+
   @Post('seed')
   seed(@Body() body: { secret: string; email: string; password: string; name?: string }) {
     return this.service.seed(body.secret, body.email, body.password, body.name);

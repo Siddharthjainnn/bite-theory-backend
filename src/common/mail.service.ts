@@ -37,6 +37,9 @@ export class MailService {
     }
   }
 
+  /** Whether SMTP is configured and emails can actually be sent (#4). */
+  get isReady(): boolean { return !!this.ready; }
+
   /** Fire-and-forget: never let an email failure break an order. */
   send(to: string | null | undefined, subject: string, html: string) {
     if (!this.ready || !to) return;
