@@ -130,7 +130,20 @@ export class AdminUserService {
 
   async update(id: number, dto: UpdateAdminUserDto) {
     await this.findOne(id);
-    await this.repo.update(id, dto as Partial<AdminUser>);
+    /* Bug #87 — the generic PATCH forwarded `password` straight into
+       repo.update(): it isn't a column, and a raw `passwordHash` string would
+       be stored unhashed (locking the admin out). Hash any incoming plain
+       password here and strip the non-column key. */
+    const { password, passwordHash, ...rest } = dto as any;
+    const data: Partial<AdminUser> = { ...rest };
+    const plain = password || passwordHash;
+    if (plain) {
+      if (String(plain).length < 8) {
+        throw new BadRequestException('Password must be at least 8 characters');
+      }
+      data.passwordHash = await bcrypt.hash(String(plain), 10);
+    }
+    if (Object.keys(data).length) await this.repo.update(id, data);
     return this.findOne(id);
   }
 

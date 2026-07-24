@@ -1393,10 +1393,6 @@ export class OrdersService {
     }
     const saved = await this.repo.save(order);
 
-    /* cancelled → give the money back (online refund + wallet credit) */
-    if (dto.status === 'cancelled') {
-      await this.refundOnCancel(id);
-    }
     await this.historyRepo.save(this.historyRepo.create({ orderId: id, status: dto.status, note: dto.note }));
     if (dto.status === 'delivered') {
       // scratch card minted at delivery — reward decided server-side, once per order
@@ -1454,6 +1450,15 @@ export class OrdersService {
           this.mail.statusHtml(saved.orderNumber || `#${id}`, m.title, m.body),
         );
       }
+    }
+
+    /* Bug #71 — refund used to run BEFORE the "Order cancelled" notification
+       was written, so the customer's bell read "💸 Refund initiated" first and
+       "❌ Order cancelled" second — backwards. Money-back now runs AFTER the
+       cancellation notice, so the timeline reads:
+         1) ❌ Order cancelled   2) 💸 Refund initiated */
+    if (dto.status === 'cancelled') {
+      await this.refundOnCancel(id);
     }
     return saved;
   }

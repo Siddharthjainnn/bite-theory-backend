@@ -41,6 +41,13 @@ export class Coupon {
   @Column({ type: 'boolean', name: 'is_active', nullable: true })
   isActive: boolean;
 
+  /* Bug #69 — the storefront used to auto-promote whichever active coupon came
+     first, so codes appeared on the cart with zero admin intent (and swapped
+     to the next one when deactivated). Only coupons the admin explicitly
+     flags as featured are advertised now. */
+  @Column({ type: 'boolean', name: 'is_featured', nullable: true, default: false })
+  isFeatured: boolean;
+
   @Column({ type: 'timestamptz', name: 'created_at', nullable: true })
   createdAt: Date;
 

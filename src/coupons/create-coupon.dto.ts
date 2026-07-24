@@ -82,4 +82,9 @@ export class CreateCouponDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /* Bug #69: only admin-flagged coupons are advertised on the storefront. */
+  @IsOptional()
+  @IsBoolean()
+  isFeatured?: boolean;
 }

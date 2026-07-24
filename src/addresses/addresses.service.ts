@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Address } from './address.entity';
@@ -50,7 +50,22 @@ export class AddressService {
 
   async remove(id: number) {
     const item = await this.findOne(id);
-    await this.repo.remove(item);
+    /* Bug #14 — "Delete" on a saved address silently failed whenever any order
+       ever referenced it: orders.address_id holds the id, so on databases with
+       the FK in place the DELETE raised a foreign-key violation → 500 → the UI
+       showed a generic "Could not delete address" and the row stayed.
+       Orders snapshot the full address TEXT (delivery_address) at checkout, so
+       the address row itself is not needed for history — detach, then delete. */
+    try {
+      await this.repo.manager.query(
+        `UPDATE orders SET address_id = NULL WHERE address_id = $1`, [id]);
+    } catch { /* orders table may not have the column in some envs — ignore */ }
+    try {
+      await this.repo.remove(item);
+    } catch {
+      throw new BadRequestException(
+        'This address could not be deleted because other records still reference it.');
+    }
     return { deleted: true, id };
   }
 }
