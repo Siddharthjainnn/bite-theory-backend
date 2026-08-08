@@ -36,6 +36,12 @@ export interface InvoiceConfig {
   headerNote: string;
   footerNote: string;
   thankYouNote: string;
+  /* whatsapp direct-ordering line */
+  whatsappNumber?: string;
+  showWhatsappLine?: boolean;
+  /* personalized thank-you greeting (auto-fills customer's first name) */
+  showPersonalGreeting?: boolean;
+  personalGreetings?: string[];
   /* chef ticket */
   chefTicketTitle: string;
   chefShowNotes: boolean;
