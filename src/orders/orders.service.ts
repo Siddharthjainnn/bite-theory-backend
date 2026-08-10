@@ -253,8 +253,19 @@ export class OrdersService {
     const pay = await this.dataSource.query(
       `SELECT method, status FROM payments WHERE order_id = $1
         ORDER BY id DESC LIMIT 1`, [id]);
+    /* Attach the customer's name for invoices/detail. The orders row only holds
+       user_id; the name lives on users as first_name/last_name. Without this the
+       invoice fell back to "User #<id>". */
+    const cust = await this.dataSource.query(
+      `SELECT u.first_name, u.last_name, u.mobile
+         FROM users u WHERE u.id = $1 LIMIT 1`, [(order as any).userId]);
+    const customerName = cust[0]
+      ? `${cust[0].first_name || ''} ${cust[0].last_name || ''}`.trim() || null
+      : null;
     return {
       ...order, items, history,
+      customerName,
+      customerMobile: cust[0]?.mobile ?? null,
       paymentMethod: pay[0]?.method ?? null,
       paymentStatus: pay[0]?.status ?? null,
     };
