@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { Product } from './product.entity';
 import { AuditService } from '../audit_logs/audit.service';
 import { CreateProductDto } from './create-product.dto';
@@ -35,19 +35,23 @@ export class ProductsService {
     }
   }
 
-  // GET /products — same shape as before, PLUS live stock status so the
-  // storefront can show "Sold out" / "Only few left!" instead of items
-  // silently vanishing.
+  // GET /products — storefront listing. Returns active + out-of-stock items
+  // (out-of-stock show greyed as "Sold out"); inactive items are hidden entirely.
   async findAll() {
-    const products = await this.repo.find({ order: { id: 'DESC' } });
+    const products = await this.repo.find({
+      where: { status: In(['active', 'out_of_stock']) },
+      order: { id: 'DESC' },
+    });
     const inv = await this.repo.query(
       `SELECT product_id, quantity, stock_status FROM inventory`);
     const by = new Map<number, any>(inv.map((r: any) => [Number(r.product_id), r]));
     return products.map((p) => {
       const row = by.get(Number(p.id));
+      // an item is sold out if EITHER its product status or its inventory says so
+      const soldOut = p.status === 'out_of_stock' || row?.stock_status === 'out_of_stock';
       return {
         ...p,
-        stockStatus: row?.stock_status || 'in_stock',
+        stockStatus: soldOut ? 'out_of_stock' : (row?.stock_status || 'in_stock'),
         stockQty: row ? Number(row.quantity) : null,
       };
     });
