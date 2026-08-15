@@ -41,6 +41,23 @@ export class OrdersService {
     if (filters.active) qb.andWhere(`o.status NOT IN ('delivered','cancelled')`);
     const rows = await qb.getMany();
 
+    /* Admin needs the customer's name + mobile + address on the order list so the
+       new-order popup can show who ordered and where. (Rider path below has its
+       own scoped attach.) Only for admin view — not the rider-filtered list. */
+    if (!filters.deliveryPartnerId && rows.length) {
+      const ids = rows.map((r) => r.id);
+      const custs = await this.dataSource.query(
+        `SELECT o.id AS order_id, u.first_name, u.last_name, u.mobile
+           FROM orders o JOIN users u ON u.id = o.user_id
+          WHERE o.id = ANY($1)`, [ids]);
+      const cby = new Map<number, any>(custs.map((c: any) => [Number(c.order_id), c]));
+      rows.forEach((r) => {
+        const c = cby.get(Number(r.id));
+        (r as any).customerName = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() || null : null;
+        (r as any).customerMobile = c?.mobile ?? null;
+      });
+    }
+
     /* riders must never see the handoff OTP — only the customer gets it (§4.5) */
     if (filters.deliveryPartnerId) {
       rows.forEach((r) => { (r as any).deliveryOtp = null; });
