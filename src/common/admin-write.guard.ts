@@ -28,6 +28,7 @@ export class AdminWriteGuard implements CanActivate {
     // P0-2: `POST /orders` REMOVED from this list. It accepted a client-supplied
     // userId/subtotal/total with no auth. Customers order via /checkout.
     { method: 'POST', path: /^\/orders\/checkout$/ },        // checkout flow
+    { method: 'POST', path: /^\/orders\/delivery-quote$/ },  // read-only delivery price/zone estimate
     { method: 'POST', path: /^\/orders\/create-payment$/ },  // open razorpay order
     { method: 'POST', path: /^\/orders\/razorpay-webhook$/ }, // Razorpay server → us (signature-verified in controller)
     { method: 'POST', path: /^\/orders\/[^/]+\/cancel$/ },      // customer cancels own order (user-token verified)
