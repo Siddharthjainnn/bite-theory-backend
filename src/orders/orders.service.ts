@@ -593,6 +593,21 @@ export class OrdersService {
   }
 
   /**
+   * Distance-scaled free-delivery threshold.
+   *   0–2 km → ₹250, 2–4 km → ₹350, 4–6 km → ₹450, … (+₹100 each extra 2 km band).
+   * Base (₹250) and step (₹100) fall back to sensible defaults; when distance is
+   * unknown we use the flat freeDeliveryAbove so nothing breaks.
+   */
+  static freeDeliveryThreshold(cfg: any, distanceKm: number | null): number {
+    const flat = Number(cfg.freeDeliveryAbove) || 250;
+    if (distanceKm == null) return flat;
+    const base = 250;   // free-above for the first 0–2 km band
+    const step = 100;   // added per extra 2 km band
+    const band = Math.floor(Math.max(0, distanceKm - 0.0001) / 2); // 0 for 0–2, 1 for 2–4, …
+    return base + band * step;
+  }
+
+  /**
    * Live delivery quote — mirrors checkout's pricing exactly so the customer
    * sees the real charge the moment they select an address (no jump later).
    */
@@ -628,7 +643,7 @@ export class OrdersService {
       etaMinutes,
       zone: OrdersService.zoneForPincode(pincode),
       pincode,
-      freeAbove: Number(cfg.freeDeliveryAbove),
+      freeAbove: OrdersService.freeDeliveryThreshold(cfg, distanceKm),
       deliverable: !outOfRange && !noPin,
       reason: noPin ? 'no_pin' : (outOfRange ? 'out_of_range' : 'ok'),
     };
@@ -643,11 +658,17 @@ export class OrdersService {
     cfg: any, netSubtotal: number,
     dLat: number | null, dLng: number | null,
   ): { deliveryCharge: number; distanceKm: number | null; etaMinutes: number } {
-    // free-above threshold always wins
-    if (netSubtotal >= Number(cfg.freeDeliveryAbove)) {
-      return { deliveryCharge: 0, distanceKm: this.distKmOrNull(cfg, dLat, dLng), etaMinutes: this.etaFor(cfg, dLat, dLng) };
-    }
     const distanceKm = this.distKmOrNull(cfg, dLat, dLng);
+
+    // Distance-based free-delivery threshold: nearer customers unlock free
+    // delivery on smaller orders, farther ones need a bigger order.
+    //   0–2 km → ₹250, 2–4 km → ₹350, 4–6 km → ₹450, … (+₹100 per 2 km band).
+    // Falls back to the flat freeDeliveryAbove when distance isn't known yet.
+    const freeThreshold = OrdersService.freeDeliveryThreshold(cfg, distanceKm);
+    if (netSubtotal >= freeThreshold) {
+      return { deliveryCharge: 0, distanceKm, etaMinutes: this.etaFor(cfg, dLat, dLng) };
+    }
+
     if (distanceKm == null) {
       // no store pin or no dest coords yet → flat legacy charge, default ETA
       return { deliveryCharge: Number(cfg.deliveryCharge), distanceKm: null, etaMinutes: 35 };
