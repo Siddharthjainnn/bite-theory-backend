@@ -55,6 +55,8 @@ export class OrdersService {
         const c = cby.get(Number(r.id));
         (r as any).customerName = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() || null : null;
         (r as any).customerMobile = c?.mobile ?? null;
+        (r as any).zone = OrdersService.zoneForPincode(
+          OrdersService.pincodeFromAddress((r as any).deliveryAddress));
       });
     }
 
@@ -283,6 +285,8 @@ export class OrdersService {
       ...order, items, history,
       customerName,
       customerMobile: cust[0]?.mobile ?? null,
+      zone: OrdersService.zoneForPincode(
+        OrdersService.pincodeFromAddress((order as any).deliveryAddress)),
       paymentMethod: pay[0]?.method ?? null,
       paymentStatus: pay[0]?.status ?? null,
     };
@@ -558,6 +562,76 @@ export class OrdersService {
     }
 
     return { subtotal, discount, deliveryCharge, tip, walletUsed, payable, distanceKm, etaMinutes };
+  }
+
+  /** Indore pincode → human zone name, for order routing & reporting. */
+  static zoneForPincode(pincode?: string | null): string {
+    const map: Record<string, string> = {
+      '452001': 'Palasia / Old City',
+      '452002': 'Chhawni / Rajwada',
+      '452003': 'Sanwer Road',
+      '452005': 'Nehru Nagar / Manik Bagh',
+      '452006': 'Rajendra Nagar / Tukoganj',
+      '452007': 'Vijay Nagar / Scheme 54',
+      '452009': 'Sudama Nagar',
+      '452010': 'Sukhliya / Scheme 53 / MR-10',
+      '452011': 'Sudama Nagar / Annapurna',
+      '452012': 'Nanda Nagar / Malharganj',
+      '452014': 'Bhawarkua / Khatiwala',
+      '452016': 'Khajrana / Bicholi',
+      '452018': 'Rau / Bijalpur',
+      '453771': 'Pithampur (outskirts)',
+      '453331': 'Mhow (outskirts)',
+    };
+    const pin = String(pincode || '').match(/\b(45\d{4})\b/)?.[1] || '';
+    return map[pin] || (pin ? `Zone ${pin}` : 'Unknown zone');
+  }
+
+  /** Pull a pincode out of a free-form address string. */
+  static pincodeFromAddress(addr?: string | null): string | null {
+    return String(addr || '').match(/\b(45\d{4})\b/)?.[1] || null;
+  }
+
+  /**
+   * Live delivery quote — mirrors checkout's pricing exactly so the customer
+   * sees the real charge the moment they select an address (no jump later).
+   */
+  async deliveryQuote(input: { addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number }) {
+    const cfg = await this.settings.get();
+    let dLat = input.deliveryLat ?? null;
+    let dLng = input.deliveryLng ?? null;
+    let pincode: string | null = null;
+
+    if ((dLat == null || dLng == null) && input.addressId) {
+      const a = await this.dataSource.query(
+        `SELECT latitude, longitude, pincode, full_address FROM addresses WHERE id = $1`,
+        [input.addressId]);
+      if (a[0]) {
+        dLat = a[0].latitude != null ? Number(a[0].latitude) : null;
+        dLng = a[0].longitude != null ? Number(a[0].longitude) : null;
+        pincode = a[0].pincode || OrdersService.pincodeFromAddress(a[0].full_address);
+      }
+    }
+
+    const subtotal = Math.max(0, Number(input.subtotal) || 0);
+    const { deliveryCharge, distanceKm, etaMinutes } =
+      this.deliveryPricing(cfg, subtotal, dLat, dLng);
+
+    // radius check — is this address even deliverable?
+    const radius = Number(cfg.deliveryRadiusKm) || 0;
+    const outOfRange = radius > 0 && distanceKm != null && distanceKm > radius;
+    const noPin = radius > 0 && (dLat == null || dLng == null);
+
+    return {
+      deliveryCharge,
+      distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,
+      etaMinutes,
+      zone: OrdersService.zoneForPincode(pincode),
+      pincode,
+      freeAbove: Number(cfg.freeDeliveryAbove),
+      deliverable: !outOfRange && !noPin,
+      reason: noPin ? 'no_pin' : (outOfRange ? 'out_of_range' : 'ok'),
+    };
   }
 
   /**

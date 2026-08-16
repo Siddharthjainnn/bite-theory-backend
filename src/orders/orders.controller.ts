@@ -201,6 +201,14 @@ export class OrdersController {
     return this.service.checkout(dto);
   }
 
+  /** Live delivery quote — same formula as checkout, so the charge shown when
+      the customer picks an address is exactly what they'll pay. Returns charge,
+      distance, ETA, and the delivery zone (by pincode). */
+  @Post('delivery-quote')
+  deliveryQuote(@Body() dto: { addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number }) {
+    return this.service.deliveryQuote(dto);
+  }
+
   /** Online pay step 1: price cart + open a Razorpay order (nothing saved yet). */
   @UseGuards(UserAuthGuard)
   @Post('create-payment')
