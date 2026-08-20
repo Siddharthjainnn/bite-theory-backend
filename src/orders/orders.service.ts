@@ -857,12 +857,10 @@ export class OrdersService {
         }
       }
 
-      /* 4b) online payments: paid amount must match the priced total */
-      if (isOnline && Math.abs(Math.round(payable * 100) - paidAmountPaise) > 0) {
-        throw new BadRequestException(
-          'Paid amount does not match the order total. Please retry payment; contact support if you were charged.',
-        );
-      }
+      /* 4b) online payment amount is verified AFTER the delivery charge is
+         finalized (see step 5b). Checking here would compare against a payable
+         that doesn't yet include the distance-based delivery charge, which
+         wrongly rejected valid paid orders. */
 
       /* 5) resolve delivery destination */
       let deliveryAddress = dto.deliveryAddress || null;
@@ -899,8 +897,11 @@ export class OrdersService {
         deliveryCharge = dp.deliveryCharge;
       }
 
-      /* re-check online payment amount if the charge changed after address resolution */
-      if (isOnline && Math.abs(Math.round(payable * 100) - paidAmountPaise) > 0) {
+      /* re-check online payment amount now that the delivery charge is final.
+         Allow ₹1 tolerance for rounding differences between the quote shown at
+         pay time and this recompute, so a 1-paise/1-rupee drift doesn't reject
+         a genuinely-paid order. */
+      if (isOnline && Math.abs(Math.round(payable * 100) - paidAmountPaise) > 100) {
         throw new BadRequestException(
           'Paid amount does not match the order total. Please retry payment; contact support if you were charged.');
       }
