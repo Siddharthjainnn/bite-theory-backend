@@ -83,7 +83,19 @@ export class ProductsService {
        damaging edit in this system and it used to leave no trace at all. */
     const before = { ...product };
     Object.assign(product, dto);
-    if (dto.name) product.slug = slugify(dto.name);
+    // Only regenerate the slug when the name actually changed, keeping it unique
+    // so an edit can never collide with another product's slug (which 500'd).
+    if (dto.name && slugify(dto.name) !== product.slug) {
+      const base = slugify(dto.name);
+      let candidate = base;
+      let n = 1;
+      while (true) {
+        const clash = await this.repo.findOne({ where: { slug: candidate } });
+        if (!clash || clash.id === product.id) break;
+        candidate = `${base}-${++n}`;
+      }
+      product.slug = candidate;
+    }
     const saved = await this.repo.save(product);
 
     await this.audit.logUpdate('products', id, before, dto as any, req,
