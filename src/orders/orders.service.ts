@@ -1120,11 +1120,146 @@ export class OrdersService {
     });
   }
 
+  /** POS: find a customer by mobile for counter auto-fill. */
+  async posLookupCustomer(mobileRaw: string) {
+    const mobile = String(mobileRaw || '').replace(/\D/g, '').slice(-10);
+    if (mobile.length !== 10) return { found: false };
+    const u = (await this.dataSource.query(
+      `SELECT id, first_name, last_name, mobile, email FROM users WHERE mobile = $1 LIMIT 1`,
+      [mobile]))[0];
+    if (!u) return { found: false, mobile };
+    return {
+      found: true,
+      id: u.id,
+      name: `${u.first_name || ''} ${u.last_name || ''}`.trim(),
+      mobile: u.mobile,
+      email: u.email || null,
+    };
+  }
+
+  /**
+   * In-store / counter (POS) order. Staff picks products, enters the customer's
+   * phone (and name if new). We match an existing customer by mobile so the
+   * order shows in their history, or create a lightweight customer record.
+   * No delivery, no online payment — it's a walk-in, paid separately at the
+   * counter. Saved as a real order so it appears in reports, then the caller
+   * prints the invoice.
+   */
+  async posOrder(dto: {
+    items: { productId: number; quantity: number }[];
+    mobile: string;
+    customerName?: string;
+    paymentMethod?: string; // 'cash' | 'upi' | 'counter'
+    cookingNote?: string;
+  }) {
+    const mobile = String(dto.mobile || '').replace(/\D/g, '').slice(-10);
+    if (mobile.length !== 10) {
+      throw new BadRequestException('Please enter a valid 10-digit mobile number.');
+    }
+    if (!dto.items?.length) {
+      throw new BadRequestException('Add at least one item.');
+    }
+
+    const cfg = await this.settings.get();
+
+    return this.dataSource.transaction(async (mgr) => {
+      /* 1) find or create the customer by mobile */
+      let user = (await mgr.query(
+        `SELECT id, first_name, last_name, mobile FROM users WHERE mobile = $1 LIMIT 1`,
+        [mobile]))[0];
+
+      if (!user) {
+        const nm = (dto.customerName || 'Guest').trim();
+        const first = nm.split(' ')[0] || 'Guest';
+        const last = nm.split(' ').slice(1).join(' ') || '';
+        user = (await mgr.query(
+          `INSERT INTO users (first_name, last_name, mobile, created_at, updated_at)
+           VALUES ($1,$2,$3,now(),now())
+           RETURNING id, first_name, last_name, mobile`,
+          [first, last, mobile]))[0];
+      } else if (dto.customerName && !(user.first_name || '').trim()) {
+        // fill in the name if we had a blank record for this phone
+        const nm = dto.customerName.trim();
+        await mgr.query(
+          `UPDATE users SET first_name=$1, last_name=$2, updated_at=now() WHERE id=$3`,
+          [nm.split(' ')[0] || 'Guest', nm.split(' ').slice(1).join(' ') || '', user.id]);
+      }
+
+      /* 2) price items from DB (never trust client prices) */
+      const ids = dto.items.map((i) => i.productId);
+      const products = await mgr.query(
+        `SELECT id, name, price, offer_price FROM products
+          WHERE id = ANY($1) AND status = 'active'`, [ids]);
+      const byId = new Map<number, any>(products.map((p: any) => [Number(p.id), p]));
+
+      let subtotal = 0;
+      const lines = dto.items.map((i) => {
+        const p = byId.get(Number(i.productId));
+        if (!p) throw new BadRequestException(`Product ${i.productId} unavailable`);
+        const price = Number(p.offer_price) > 0 && Number(p.offer_price) < Number(p.price)
+          ? Number(p.offer_price) : Number(p.price);
+        const qty = Math.max(1, Number(i.quantity) || 1);
+        const lineTotal = price * qty;
+        subtotal += lineTotal;
+        return { productId: Number(p.id), name: p.name, price, qty, lineTotal };
+      });
+
+      /* 3) totals — no delivery, no discount for a counter order */
+      const total = subtotal;
+      const gst = this.computeGst(cfg, subtotal, 0);
+      const invoiceNo = await this.nextInvoiceNo(mgr, cfg);
+
+      const orderNumber = 'BTPOS' + Date.now().toString(36).toUpperCase() +
+        Math.random().toString(36).slice(2, 4).toUpperCase();
+
+      /* 4) create the order — marked delivered/counter, no delivery fields */
+      const [order] = await mgr.query(
+        `INSERT INTO orders
+           (order_number, user_id, subtotal, discount, delivery_charge, tax, tax_rate,
+            cgst, sgst, invoice_no, wallet_used, total, status, delivery_address,
+            cooking_note, placed_at)
+         VALUES ($1,$2,$3,0,0,$4,$5,$6,$7,$8,0,$9,'order_received','Counter / walk-in',$10,now())
+         RETURNING *, order_number AS "orderNumber", user_id AS "userId", placed_at AS "placedAt"`,
+        [orderNumber, user.id, subtotal, gst.tax, gst.taxRate, gst.cgst, gst.sgst,
+         invoiceNo, total, dto.cookingNote?.trim() || null]);
+      const orderId = Number(order.id);
+
+      /* 5) items */
+      for (const l of lines) {
+        await mgr.query(
+          `INSERT INTO order_items (order_id, product_id, product_name, unit_price, quantity, line_total)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [orderId, l.productId, l.name, l.price, l.qty, l.lineTotal]);
+      }
+
+      /* 6) payment record (paid at counter, method as given) */
+      await mgr.query(
+        `INSERT INTO payments (order_id, method, status, amount, transaction_id, created_at)
+         VALUES ($1,$2,'paid',$3,$4,now())`,
+        [orderId, dto.paymentMethod || 'counter', total, 'POS-' + orderNumber]);
+
+      /* 7) return a full order shape for the invoice */
+      const customerName = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Guest';
+      return {
+        ...order,
+        id: orderId,
+        customerName,
+        customerMobile: mobile,
+        items: lines.map((l) => ({
+          productName: l.name, quantity: l.qty,
+          unitPrice: l.price, lineTotal: l.lineTotal,
+        })),
+        subtotal, discount: 0, deliveryCharge: 0, total,
+        paymentMethod: dto.paymentMethod || 'counter',
+        isNewCustomer: !dto.customerName ? false : true,
+      };
+    });
+  }
+
   /**
    * Razorpay webhook (payment.captured). The controller has already verified
    * the webhook signature against the raw body. This is the safety net for
-   * "money captured but browser died before checkout" — if no order exists
-   * for this payment yet, we create it from the pending snapshot.
+   * "money captured but browser died before checkout".
    * Always resolves (webhook must get a 200 or Razorpay retries forever).
    */
   async handleRazorpayWebhook(event: any) {

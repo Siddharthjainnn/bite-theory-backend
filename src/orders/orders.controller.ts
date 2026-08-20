@@ -8,7 +8,7 @@ import { RazorpayService } from './razorpay.service';
 import { UserAuthGuard, verifyUserToken } from '../common/user-auth.guard';
 import { RiderAuthGuard, riderIdFromReq, safeEqual } from '../common/rider-auth.guard';
 import { AdminAuthGuard, Roles } from '../common/admin-auth.guard';
-import { requireSelfOrAdmin } from '../common/req-auth.util';
+import { requireSelfOrAdmin, requireAdmin } from '../common/req-auth.util';
 import {
   CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
   SetPrepVideoDto, RefundOrderDto,
@@ -207,6 +207,24 @@ export class OrdersController {
   @Post('delivery-quote')
   deliveryQuote(@Body() dto: { addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number }) {
     return this.service.deliveryQuote(dto);
+  }
+
+  /** POS: look up a customer by phone so the counter screen can auto-fill their
+      name. Admin only. Returns null-ish when not found (new customer). */
+  @Get('pos/customer/:mobile')
+  posCustomer(@Param('mobile') mobile: string, @Req() req: Request) {
+    requireAdmin(req);
+    return this.service.posLookupCustomer(mobile);
+  }
+
+  /** POS: create an in-store / counter order and return the invoice data. Admin only. */
+  @Post('pos/order')
+  posOrder(
+    @Body() dto: { items: { productId: number; quantity: number }[]; mobile: string; customerName?: string; paymentMethod?: string; cookingNote?: string },
+    @Req() req: Request,
+  ) {
+    requireAdmin(req);
+    return this.service.posOrder(dto);
   }
 
   /** Online pay step 1: price cart + open a Razorpay order (nothing saved yet). */
