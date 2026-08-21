@@ -13,6 +13,7 @@ import {
   CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
   SetPrepVideoDto, RefundOrderDto,
 } from './dto';
+import { PosOrderDto } from './pos-order.dto';
 
 @Controller('orders')
 export class OrdersController {
@@ -220,7 +221,7 @@ export class OrdersController {
   /** POS: create an in-store / counter order and return the invoice data. Admin only. */
   @Post('pos/order')
   posOrder(
-    @Body() dto: { items: { productId: number; quantity: number }[]; mobile: string; customerName?: string; paymentMethod?: string; cookingNote?: string },
+    @Body() dto: PosOrderDto,
     @Req() req: Request,
   ) {
     requireAdmin(req);
