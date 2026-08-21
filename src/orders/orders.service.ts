@@ -1162,7 +1162,8 @@ export class OrdersService {
 
     const cfg = await this.settings.get();
 
-    return this.dataSource.transaction(async (mgr) => {
+    try {
+      return await this.dataSource.transaction(async (mgr) => {
       /* 1) find or create the customer by mobile */
       let user = (await mgr.query(
         `SELECT id, first_name, last_name, mobile FROM users WHERE mobile = $1 LIMIT 1`,
@@ -1234,8 +1235,8 @@ export class OrdersService {
 
       /* 6) payment record (paid at counter, method as given) */
       await mgr.query(
-        `INSERT INTO payments (order_id, method, status, amount, transaction_id, created_at)
-         VALUES ($1,$2,'paid',$3,$4,now())`,
+        `INSERT INTO payments (order_id, method, amount, status, transaction_id)
+         VALUES ($1,$2,$3,'paid',$4)`,
         [orderId, dto.paymentMethod || 'counter', total, 'POS-' + orderNumber]);
 
       /* 7) return a full order shape for the invoice */
@@ -1254,6 +1255,10 @@ export class OrdersService {
         isNewCustomer: !dto.customerName ? false : true,
       };
     });
+    } catch (e: any) {
+      console.error('[POS-ORDER-FAILED]', e?.message || e, e?.detail || '', e?.column || '');
+      throw new BadRequestException('POS order failed: ' + (e?.message || 'unknown error'));
+    }
   }
 
   /**
