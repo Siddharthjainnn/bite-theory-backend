@@ -1,6 +1,6 @@
 import {
   IsString, IsOptional, IsEmail, IsInt, IsArray, IsBoolean,
-  ValidateNested, MaxLength, Matches, IsIn,
+  ValidateNested, MaxLength, Matches, IsIn, IsNumber,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -19,6 +19,16 @@ export class TiffinDayDto {
 
   @IsOptional() @IsString() @MaxLength(40)
   slot?: string;
+
+  /* Present only when the address came from a Google Places pick. */
+  @IsOptional() @IsNumber()
+  lat?: number;
+
+  @IsOptional() @IsNumber()
+  lng?: number;
+
+  @IsOptional() @IsString() @MaxLength(200)
+  placeId?: string;
 }
 
 export class CreateTiffinLeadDto {

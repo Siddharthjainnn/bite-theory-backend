@@ -55,6 +55,11 @@ export class TiffinLead {
     address: string;
     landmark?: string;
     slot: string;
+    /* Set when the customer picked a Google Places suggestion; absent for
+       free-text addresses. Riders should still read `address` either way. */
+    lat?: number;
+    lng?: number;
+    placeId?: string;
   }> | null;
 
   @Column({ type: 'text', name: 'notes', nullable: true })
