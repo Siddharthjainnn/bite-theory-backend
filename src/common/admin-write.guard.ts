@@ -44,6 +44,12 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'DELETE', path: /^\/reviews\/[^/]+$/ },       // delete my review
     { method: 'POST', path: /^\/coupons\/validate$/ },      // check a coupon code
     { method: 'POST', path: /^\/support-tickets$/ },        // contact support
+    /* Tiffin enrolment from the Meta ad funnel. MUST stay public: ad traffic
+       has no account and no admin key. Abuse is contained at the controller
+       instead — 5/min throttle + 10-minute de-dupe by phone. Only the POST is
+       open; GET/PATCH/DELETE on /tiffin/leads call requireAdmin(), so the
+       leads themselves (name, phone, home address) are never publicly listable. */
+    { method: 'POST', path: /^\/tiffin\/leads$/ },          // enrol for daily tiffin
     { method: 'POST', path: /^\/admin-users\/login$/ },     // admin email+password login
     { method: 'POST', path: /^\/admin-users\/seed$/ },      // one-time bootstrap (secret-gated)
     { method: 'POST', path: /^\/referrals\/claim$/ },       // new user enters a friend's code
