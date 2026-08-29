@@ -46,6 +46,7 @@ import { FlashModule } from './flash/flash.module';
 import { FaqModule } from './faq/faq.module';
 import { ReportsModule } from './reports/reports.module';
 import { OffersModule } from './offers/offers.module';
+import { TiffinModule } from './tiffin/tiffin.module';
 
 @Module({
   imports: [
@@ -105,6 +106,7 @@ import { OffersModule } from './offers/offers.module';
     FaqModule,
     ReportsModule,
     OffersModule,
+    TiffinModule,
   ],
   controllers: [AppController],
   providers: [
