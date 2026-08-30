@@ -7,6 +7,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
     import { join } from 'path';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { MailService } from './common/mail.service';
 import { AdminWriteGuard } from './common/admin-write.guard';
 import { AdminSectionGuard } from './common/admin-section.guard';
 
@@ -111,6 +112,8 @@ import { TiffinModule } from './tiffin/tiffin.module';
   controllers: [AppController],
   providers: [
     AppService,
+    /* Backs the admin SMTP smoke test on AppController. */
+    MailService,
     { provide: APP_GUARD, useClass: AdminWriteGuard },
     /* Real server-side enforcement of Admin → Roles & Access. Without this the
        role config only hid sidebar buttons: a kitchen manager could still call

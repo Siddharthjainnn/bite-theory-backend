@@ -40,6 +40,26 @@ export class MailService {
   /** Whether SMTP is configured and emails can actually be sent (#4). */
   get isReady(): boolean { return !!this.ready; }
 
+  /**
+   * Awaited send that reports what happened. Only for the admin smoke test —
+   * ordinary callers should use send(), which can never throw into a request.
+   */
+  async sendAndReport(to: string, subject: string, html: string) {
+    if (!this.ready) return { ok: false, error: 'SMTP not configured' };
+    try {
+      const info = await this.transporter.sendMail({
+        from: process.env.MAIL_FROM || process.env.SMTP_USER,
+        to, subject, html,
+      });
+      return { ok: true, messageId: info?.messageId ?? null, accepted: info?.accepted ?? [] };
+    } catch (e: any) {
+      /* Surfaced verbatim: 'Invalid login' means the App Password is wrong,
+         'ETIMEDOUT' means the host/port is blocked. Both are unguessable
+         without the real message. */
+      return { ok: false, error: e?.message || String(e) };
+    }
+  }
+
   /** Fire-and-forget: never let an email failure break an order. */
   send(to: string | null | undefined, subject: string, html: string) {
     if (!this.ready || !to) return;
