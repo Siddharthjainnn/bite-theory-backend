@@ -4,6 +4,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { CouponAssignmentsService } from './coupon_assignments.service';
+import { CouponBlastService, Segment } from './coupon-blast.service';
 import { CreateCouponAssignmentDto } from './dto';
 import { isAdminReq, requireAdmin, requireSelfOrAdmin } from '../common/req-auth.util';
 
@@ -15,7 +16,10 @@ import { isAdminReq, requireAdmin, requireSelfOrAdmin } from '../common/req-auth
  */
 @Controller('coupon-assignments')
 export class CouponAssignmentsController {
-  constructor(private readonly service: CouponAssignmentsService) {}
+  constructor(
+    private readonly service: CouponAssignmentsService,
+    private readonly blast: CouponBlastService,
+  ) {}
 
   @Get()
   findAll(
@@ -46,5 +50,34 @@ export class CouponAssignmentsController {
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     requireAdmin(req);
     return this.service.remove(id);
+  }
+
+  /* ── bulk coupon campaign (admin only) ────────────────────────────────
+     Audience counts are read-only; the send is batched and resumable, with
+     coupon_assignments acting as the already-sent ledger. */
+
+  @Get('blast/audience/:couponId')
+  audience(@Param('couponId', ParseIntPipe) couponId: number, @Req() req: Request) {
+    requireAdmin(req);
+    return this.blast.allSegments(couponId);
+  }
+
+  @Post('blast/send')
+  sendBatch(
+    @Req() req: Request,
+    @Body() body: {
+      couponId: number; segment: Segment; limit?: number;
+      headline?: string; siteUrl?: string; dryRun?: boolean;
+    },
+  ) {
+    requireAdmin(req);
+    return this.blast.sendBatch({
+      couponId: body.couponId,
+      segment: body.segment,
+      limit: body.limit ?? 25,
+      headline: body.headline,
+      siteUrl: body.siteUrl,
+      dryRun: body.dryRun,
+    });
   }
 }

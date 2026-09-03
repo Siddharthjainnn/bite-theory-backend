@@ -44,12 +44,15 @@ export class MailService {
    * Awaited send that reports what happened. Only for the admin smoke test —
    * ordinary callers should use send(), which can never throw into a request.
    */
-  async sendAndReport(to: string, subject: string, html: string) {
+  async sendAndReport(
+    to: string, subject: string, html: string,
+    headers?: Record<string, string>,
+  ) {
     if (!this.ready) return { ok: false, error: 'SMTP not configured' };
     try {
       const info = await this.transporter.sendMail({
         from: process.env.MAIL_FROM || process.env.SMTP_USER,
-        to, subject, html,
+        to, subject, html, headers,
       });
       return { ok: true, messageId: info?.messageId ?? null, accepted: info?.accepted ?? [] };
     } catch (e: any) {
@@ -97,5 +100,65 @@ export class MailService {
         <p>Order <b>${orderNumber}</b>: ${body}</p>
         <p style="color:#999;font-size:12px">Bites Theory</p>
       </div>`;
+  }
+
+  /**
+   * Coupon / thank-you email for a bulk send.
+   *
+   * Deliberately plain HTML with inline styles and no images: Gmail strips
+   * <style> blocks, and an image-heavy first email from a new sending domain
+   * is a strong spam signal. Table-free single-column layout renders the same
+   * in Gmail, Outlook and every phone client.
+   */
+  couponHtml(o: {
+    firstName?: string | null;
+    code: string;
+    headline: string;
+    description?: string | null;
+    minOrder?: number | null;
+    validUntil?: Date | string | null;
+    siteUrl: string;
+    unsubscribeUrl: string;
+  }) {
+    const hi = o.firstName ? `Hi ${o.firstName},` : 'Hi there,';
+    const valid = o.validUntil
+      ? new Date(o.validUntil).toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'long', year: 'numeric',
+        })
+      : null;
+
+    return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;color:#0D3B2E">
+  <h2 style="color:#0D3B2E;margin:0 0 4px">Thank you for joining Bites Theory</h2>
+  <p style="font-size:15px;line-height:1.6;margin:14px 0 6px">${hi}</p>
+  <p style="font-size:15px;line-height:1.6;margin:0 0 18px">
+    Thanks for signing up with us. Here is a coupon to get you started —
+    100% pure veg, freshly cooked, delivered across Indore.
+  </p>
+
+  <div style="border:2px dashed #4CAF50;border-radius:14px;padding:18px;text-align:center;background:#e8f5e9">
+    <div style="font-size:13px;font-weight:bold;color:#2e7d32;letter-spacing:1px">${o.headline}</div>
+    <div style="font-size:30px;font-weight:bold;letter-spacing:4px;color:#0D3B2E;margin:10px 0">${o.code}</div>
+    <div style="font-size:12.5px;color:#4a5a52">
+      ${o.description ? o.description + '<br>' : ''}
+      ${o.minOrder ? `On orders above ₹${o.minOrder}. ` : ''}
+      ${valid ? `Valid till ${valid}.` : ''}
+    </div>
+  </div>
+
+  <p style="text-align:center;margin:24px 0">
+    <a href="${o.siteUrl}" style="background:#0D3B2E;color:#ffffff;text-decoration:none;
+       padding:13px 30px;border-radius:24px;font-size:15px;font-weight:bold;display:inline-block">
+      Order now
+    </a>
+  </p>
+
+  <p style="font-size:12.5px;color:#6b7d74;line-height:1.6;margin:22px 0 0">
+    Apply the code at checkout. Questions? Just reply to this email.
+  </p>
+  <p style="font-size:11.5px;color:#9aa8a1;line-height:1.6;margin:14px 0 0;border-top:1px solid #e4ebe6;padding-top:12px">
+    You are receiving this because you created a Bites Theory account.
+    <a href="${o.unsubscribeUrl}" style="color:#9aa8a1">Unsubscribe</a>
+  </p>
+</div>`;
   }
 }
