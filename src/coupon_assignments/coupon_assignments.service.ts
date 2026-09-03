@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { CouponAssignment } from './coupon-assignment.entity';
 import { Coupon } from '../coupons/coupon.entity';
 import { CreateCouponAssignmentDto } from './dto';
+import { MailService } from '../common/mail.service';
 
 @Injectable()
 export class CouponAssignmentsService {
@@ -12,7 +13,42 @@ export class CouponAssignmentsService {
     private readonly repo: Repository<CouponAssignment>,
     @InjectRepository(Coupon)
     private readonly couponRepo: Repository<Coupon>,
+    private readonly ds: DataSource,
+    private readonly mail: MailService,
   ) {}
+
+  /**
+   * Email one assigned coupon. Returns a result rather than throwing: the
+   * assignment itself has already succeeded by this point, and a bounced
+   * email must not roll that back or fail the admin's request.
+   */
+  private async emailCoupon(userId: number, coupon: Coupon) {
+    if (!this.mail.isReady) return { emailed: false, reason: 'SMTP not configured' };
+    const [u] = await this.ds.query(
+      `SELECT email, first_name FROM users WHERE id = $1`, [userId],
+    );
+    if (!u?.email) return { emailed: false, reason: 'Customer has no email address' };
+
+    const site = process.env.SITE_URL || 'https://www.bitestheory.com';
+    const res = await this.mail.sendAndReport(
+      u.email,
+      'A coupon from Bites Theory',
+      this.mail.couponHtml({
+        firstName: u.first_name,
+        code: coupon.code,
+        headline: 'YOUR COUPON',
+        description: coupon.description,
+        minOrder: coupon.minOrder ? Number(coupon.minOrder) : null,
+        validUntil: coupon.validUntil,
+        siteUrl: site,
+        unsubscribeUrl: `${site}/account/profile`,
+      }),
+      { 'List-Unsubscribe': `<mailto:${process.env.SMTP_USER}?subject=unsubscribe>` },
+    );
+    return res.ok
+      ? { emailed: true, to: u.email }
+      : { emailed: false, reason: String(res.error) };
+  }
 
   /** Admin list — newest first, joined with code + user email for the panel. */
   async findAll(filters: { userId?: number } = {}) {
@@ -86,14 +122,18 @@ export class CouponAssignmentsService {
       existing.orderId = null;
       existing.usedAt = null;
       existing.note = dto.note ?? existing.note;
-      return this.repo.save(existing);
+      const saved = await this.repo.save(existing);
+      const mail = dto.sendEmail ? await this.emailCoupon(dto.userId, coupon) : null;
+      return { ...saved, mail };
     }
     const row = this.repo.create({
       couponId: dto.couponId,
       userId: dto.userId,
       note: dto.note ?? null,
     });
-    return this.repo.save(row);
+    const saved = await this.repo.save(row);
+    const mail = dto.sendEmail ? await this.emailCoupon(dto.userId, coupon) : null;
+    return { ...saved, mail };
   }
 
   async remove(id: number) {
