@@ -1,4 +1,5 @@
 import { normalizeDispatch, DispatchConfig } from '../delivery/dispatch.algo';
+import { normalizeNotify } from '../notify/notify.config';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -129,6 +130,7 @@ export class SettingsService {
     s.invoiceConfig = { ...DEFAULT_INVOICE, ...(s.invoiceConfig || {}) };
     /* always a complete, typed config — callers never see a missing key */
     s.dispatchConfig = normalizeDispatch(s.dispatchConfig) as unknown as Record<string, unknown>;
+    s.notifyConfig = normalizeNotify(s.notifyConfig) as unknown as Record<string, unknown>;
     return s;
   }
 
@@ -140,6 +142,9 @@ export class SettingsService {
   async update(dto: UpdateSettingsDto): Promise<StoreSettings> {
     const cur = await this.get(); // ensure row exists
     /* partial edits to the rules merge over what is stored, then normalise */
+    if (dto.notifyConfig) {
+      dto.notifyConfig = normalizeNotify({ ...(cur.notifyConfig || {}), ...dto.notifyConfig }) as unknown as Record<string, unknown>;
+    }
     if (dto.dispatchConfig) {
       dto.dispatchConfig = normalizeDispatch({ ...(cur.dispatchConfig || {}), ...dto.dispatchConfig }) as unknown as Record<string, unknown>;
     }

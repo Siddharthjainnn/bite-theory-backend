@@ -8,6 +8,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { OrdersService } from '../orders/orders.service';
 import { MailService } from '../common/mail.service';
+import { NotifyService } from '../notify/notify.service';
 import { EtaService } from './eta.service';
 import { TripsService, RiderStatus } from './trips.service';
 import {
@@ -72,6 +73,7 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
     private readonly trips: TripsService,
     private readonly eta: EtaService,
     private readonly mail: MailService,
+    private readonly notify: NotifyService,
   ) {}
 
   onModuleInit() {
@@ -327,6 +329,18 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
 
       const { cfg } = await this.eta.config();
       if (cfg.autoDispatch) await this.autoDispatch();
+
+      /* WhatsApp kitchen alerts: waiting too long, ready with nobody, book Porter now. */
+      await this.notify.watch();
+      const nc = (await this.notify.config()).cfg;
+      if (nc.staffEnabled && nc.alertBookPorter) {
+        const { suggestions } = await this.suggestions();
+        await this.notify.bookPorterNow(
+          suggestions
+            .filter((s) => s.kind === 'porter' && (s.porterBookInMin ?? 1) <= 0)
+            .map((s) => ({ orderId: s.orderId, orderNumber: s.orderNumber })),
+        );
+      }
     } catch (e: unknown) {
       this.logger.warn(
         `Dispatch tick failed: ${e instanceof Error ? e.message : e}`,
@@ -413,6 +427,7 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
           `${title} — Bite Theory`,
           this.mail.statusHtml(r.order_number, title, body),
         );
+        void this.notify.delayed(Number(r.id), new Date(liveAt));
         sent++;
       } catch {
         /* one bad order must not stop the others */

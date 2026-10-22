@@ -194,6 +194,10 @@ export class StoreSettings {
   @Column({ type: 'jsonb', name: 'dispatch_config', nullable: true })
   dispatchConfig: Record<string, unknown> | null;
 
+  /* WhatsApp: who gets what (staff numbers, thresholds). See src/notify/notify.config.ts. */
+  @Column({ type: 'jsonb', name: 'notify_config', nullable: true })
+  notifyConfig: Record<string, unknown> | null;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

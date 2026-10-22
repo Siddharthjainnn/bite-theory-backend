@@ -95,4 +95,8 @@ export class UpdateSettingsDto {
   /* Delivery rules (merged over defaults; see dispatch.algo.ts). */
   @IsOptional() @IsObject()
   dispatchConfig?: Record<string, unknown>;
+
+  /* WhatsApp notifications (merged over defaults; see notify.config.ts). */
+  @IsOptional() @IsObject()
+  notifyConfig?: Record<string, unknown>;
 }

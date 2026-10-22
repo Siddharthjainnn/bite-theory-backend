@@ -12,10 +12,11 @@ import { ScratchModule } from '../scratch/scratch.module';
 import { FlashModule } from '../flash/flash.module';
 import { DeliveryPartnerModule } from '../delivery_partners/delivery_partners.module';
 import { EtaModule } from '../delivery/eta.module';
+import { NotifyModule } from '../notify/notify.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule, ThaliModule,
-    ScratchModule, FlashModule, DeliveryPartnerModule, EtaModule],
+    ScratchModule, FlashModule, DeliveryPartnerModule, EtaModule, NotifyModule],
   controllers: [OrdersController],
   providers: [OrdersService, RazorpayService, MailService],
   exports: [OrdersService], // DeliveryModule drives trips through the same state machine

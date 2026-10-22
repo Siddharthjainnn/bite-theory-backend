@@ -24,6 +24,7 @@ import {
 } from '../delivery/trip.sql';
 import { EtaService } from '../delivery/eta.service';
 import { makegoodFor, normalizeDispatch } from '../delivery/dispatch.algo';
+import { NotifyService } from '../notify/notify.service';
 import {
   bookingError, buildDispatchSheet, isExternal, publicCourier, safeTrackingUrl,
   CANCELLABLE_BOOKING_STATUSES,
@@ -45,6 +46,7 @@ export class OrdersService {
     private readonly flash: FlashService,
     private readonly partners: DeliveryPartnerService,
     private readonly eta: EtaService,
+    private readonly notify: NotifyService,
   ) {}
 
   async findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -281,6 +283,7 @@ export class OrdersService {
        VALUES ($1,$2,'in_app','🙏 Sorry for the wait',$3,true)`,
       [order.userId, order.id,
        `Order ${order.orderNumber} arrived ${lateBy} min after we promised. We've added ₹${amount} to your wallet.`]);
+    void this.notify.madeGood(Number(order.id), amount, lateBy);
   }
 
   private clearExternal(order: Order) {
@@ -1452,6 +1455,8 @@ export class OrdersService {
        statement inside a Postgres transaction aborts the whole transaction,
        so an ETA problem must never be able to lose a paid order. */
     const promise = promiseFor ? await this.stampPromise(promiseFor) : null;
+    /* WhatsApp: customer confirmation + "new order" to the kitchen. Queued, never blocks. */
+    if (promiseFor) void this.notify.orderPlaced((promiseFor as { orderId: number }).orderId);
     return promise ? { ...result, ...promise } : result;
   }
 
@@ -2092,6 +2097,9 @@ export class OrdersService {
               WHERE order_id = $1 AND COALESCE(batch_bonus, 0) = 0`, [id, bonus]);
         }
       }
+      /* "Delivered" must reach the customer before "sorry, ₹30 added", so queue
+         it now (the later call at the end is a no-op thanks to its dedupe key). */
+      await this.notify.statusChanged(id, 'delivered');
       await this.lateMakegood(saved).catch(() => { /* never block a delivery on a goodwill credit */ });
     }
     if (dto.status === 'cancelled') {
@@ -2180,6 +2188,8 @@ export class OrdersService {
     if (dto.status === 'cancelled') {
       await this.refundOnCancel(id, (dto as any).refundTo);
     }
+    /* WhatsApp: the customer hears about the moments that matter (queued, never blocks). */
+    void this.notify.statusChanged(id, dto.status);
     return saved;
   }
 

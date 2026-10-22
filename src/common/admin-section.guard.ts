@@ -38,6 +38,7 @@ const PATH_SECTION: { path: RegExp; section: string }[] = [
   { path: /^\/order-items/, section: 'order_items' },
   { path: /^\/orders/, section: 'orders' },
   { path: /^\/delivery\/report/, section: 'reports' },
+  { path: /^\/notify\/(status|log|test)/, section: 'settings' },
   { path: /^\/delivery/, section: 'orders' },
   { path: /^\/products/, section: 'products' },
   { path: /^\/categories/, section: 'categories' },
