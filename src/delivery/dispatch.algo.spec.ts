@@ -15,6 +15,9 @@ import {
   isDelayed,
   makegoodFor,
   MIN_SAMPLES,
+  areaIssues,
+  bearingDeg,
+  angleBetween,
   PoolOrder,
   RiderView,
   DispatchConfig,
@@ -398,5 +401,76 @@ describe('porter + promises', () => {
     expect(makegoodFor(T0 + 14 * MIN, T0, on)).toBe(0);
     expect(makegoodFor(T0 + 15 * MIN, T0, on)).toBe(30);
     expect(makegoodFor(T0 + 60 * MIN, null, on)).toBe(0);
+  });
+});
+
+describe('same area, same direction', () => {
+  /* ~2.2 km north of the kitchen, and points around it */
+  const N1 = { lat: 22.7439, lng: 75.8857 };
+  const N2_25km = { lat: 22.7664, lng: 75.8857 }; // 2.5 km further north
+  const EAST = { lat: 22.7239, lng: 75.9071 }; // ~2.2 km east of the kitchen
+  const NEAR = { lat: 22.7279, lng: 75.8907 }; // ~0.7 km from the kitchen
+  const loose = { ...cfg, batchMaxExtraMin: 1e9, foodAgeMaxMin: 1e9 }; // isolate the area rules
+
+  it('bearing basics', () => {
+    expect(Math.round(bearingDeg(store, N1))).toBe(0);
+    expect(Math.round(bearingDeg(store, EAST))).toBe(90);
+    expect(angleBetween(350, 10)).toBe(20);
+    expect(angleBetween(90, 270)).toBe(180);
+  });
+
+  it('drops 2.5 km apart: refused at the 2 km default, allowed at 3 km', () => {
+    const pair = [order(1, N1), order(2, N2_25km)];
+    expect(planRoute(pair, store, mpk, loose)).toBeNull();
+    expect(areaIssues(pair, store, loose)).toEqual([
+      { kind: 'gap', a: 1, b: 2, value: 2.5 },
+    ]);
+    expect(
+      planRoute(pair, store, mpk, { ...loose, batchMaxDropGapKm: 3 }),
+    ).not.toBeNull();
+  });
+
+  it('different directions are refused even when the gap rule is off', () => {
+    const pair = [order(1, N1), order(3, EAST)];
+    const noGap = { ...loose, batchMaxDropGapKm: 0 };
+    expect(planRoute(pair, store, mpk, noGap)).toBeNull();
+    const issues = areaIssues(pair, store, noGap);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('direction');
+    expect(issues[0].value).toBeGreaterThan(80);
+    expect(
+      planRoute(pair, store, mpk, { ...noGap, batchMaxBearingDeg: 180 }),
+    ).not.toBeNull();
+  });
+
+  it('a drop right next to the kitchen is on the way for any direction', () => {
+    expect(areaIssues([order(1, N1), order(4, NEAR)], store, loose)).toEqual(
+      [],
+    );
+  });
+
+  it('a solo order is never checked', () => {
+    expect(planRoute([order(1, N2_25km)], store, mpk, cfg)).not.toBeNull();
+  });
+
+  it('formTrips keeps a far pair apart even if the time rules would allow it', () => {
+    const trips = formTrips(
+      [order(1, N1), order(2, N2_25km)],
+      store,
+      mpk,
+      loose,
+    );
+    expect(trips.every((t) => t.orderIds.length === 1)).toBe(true);
+  });
+
+  it('settings: 0 km = no distance limit; angle is capped at 180', () => {
+    expect(
+      normalizeDispatch({ batchMaxBearingDeg: 500 }).batchMaxBearingDeg,
+    ).toBe(180);
+    expect(
+      normalizeDispatch({ batchMaxDropGapKm: '3' }).batchMaxDropGapKm,
+    ).toBe(3);
+    expect(DEFAULT_DISPATCH.batchMaxDropGapKm).toBe(2);
+    expect(DEFAULT_DISPATCH.batchMaxBearingDeg).toBe(45);
   });
 });

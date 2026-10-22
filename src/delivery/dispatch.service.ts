@@ -92,9 +92,7 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
 
   /* ─────────────────────────── suggestions ─────────────────────────── */
 
-  async suggestions(
-    now = Date.now(),
-  ): Promise<{
+  async suggestions(now = Date.now()): Promise<{
     generatedAt: string;
     suggestions: Suggestion[];
     riders: RiderStatus[];
@@ -169,6 +167,8 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
         batchMaxExtraMin: 1e9,
         batchReadyGapMin: 1e9,
         foodAgeMaxMin: 1e9,
+        batchMaxDropGapKm: 0,
+        batchMaxBearingDeg: 180,
       });
       let best: {
         p: (typeof pool)[number];

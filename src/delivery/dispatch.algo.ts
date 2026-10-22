@@ -23,6 +23,8 @@ export interface DispatchConfig {
   batchReadyGapMin: number; // ready times within this many minutes
   foodAgeMaxMin: number; // ready → delivered, every order in a trip
   batchBonus: number; // ₹ paid to the rider per extra order on a trip
+  batchMaxDropGapKm: number; // drops on one trip at most this far apart (0 = no limit)
+  batchMaxBearingDeg: number; // drops within this angle of each other, seen from the kitchen (180 = off)
   /* time model fallbacks (used until enough history exists) */
   prepStepMin: number; // minutes per extra item beyond the slowest
   prepStepCapMin: number; // cap on that step
@@ -47,6 +49,8 @@ export const DEFAULT_DISPATCH: DispatchConfig = {
   batchReadyGapMin: 5,
   foodAgeMaxMin: 30,
   batchBonus: 10,
+  batchMaxDropGapKm: 2,
+  batchMaxBearingDeg: 45,
   prepStepMin: 2,
   prepStepCapMin: 10,
   kitchenParallel: 3,
@@ -80,6 +84,7 @@ export function normalizeDispatch(raw: unknown): DispatchConfig {
   out.batchMaxOrders = Math.min(3, Math.max(1, Math.round(out.batchMaxOrders)));
   out.defaultSpeedKmph = Math.max(3, out.defaultSpeedKmph);
   out.kitchenParallel = Math.max(1, Math.round(out.kitchenParallel));
+  out.batchMaxBearingDeg = Math.min(180, out.batchMaxBearingDeg);
   return out;
 }
 
@@ -330,6 +335,85 @@ function soloArrival(o: PoolOrder, store: Pt, mpk: number) {
 }
 
 /** Evaluate one drop sequence. Returns null if any batching rule breaks. */
+/* ─────────────────────────── same area, same direction ─────────────────────────── */
+
+/** Compass bearing from a to b, 0-360 (0 = north). */
+export function bearingDeg(a: Pt, b: Pt): number {
+  const r = Math.PI / 180;
+  const y = Math.sin((b.lng - a.lng) * r) * Math.cos(b.lat * r);
+  const x =
+    Math.cos(a.lat * r) * Math.sin(b.lat * r) -
+    Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lng - a.lng) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+
+/** Smallest angle between two bearings, 0-180. */
+export function angleBetween(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+/** Drops this close to the kitchen are "on the way" for any direction. */
+export const NEAR_KITCHEN_KM = 1;
+
+export interface AreaIssue {
+  kind: 'gap' | 'direction';
+  a: number; // orderId
+  b: number; // orderId
+  value: number; // km apart, or degrees apart
+}
+
+/**
+ * The plain-language batching rule: orders ride together only if their
+ * drops are close to each other (within batchMaxDropGapKm) and in the same
+ * direction from the kitchen (within batchMaxBearingDeg). The time rules in
+ * planRoute catch most bad pairs anyway; this one is the rule the kitchen can
+ * see and tune ("1, 2 or 3 km apart"), and it refuses a pair that is quick but
+ * splits the rider across two parts of town.
+ */
+export function areaIssues(
+  set: PoolOrder[],
+  store: Pt,
+  cfg: DispatchConfig,
+): AreaIssue[] {
+  const issues: AreaIssue[] = [];
+  for (let i = 0; i < set.length; i++) {
+    for (let j = i + 1; j < set.length; j++) {
+      const a = set[i],
+        b = set[j];
+      const km = haversineKm(a.dest.lat, a.dest.lng, b.dest.lat, b.dest.lng);
+      if (cfg.batchMaxDropGapKm > 0 && km > cfg.batchMaxDropGapKm) {
+        issues.push({
+          kind: 'gap',
+          a: a.orderId,
+          b: b.orderId,
+          value: Math.round(km * 10) / 10,
+        });
+      }
+      const nearA =
+        haversineKm(store.lat, store.lng, a.dest.lat, a.dest.lng) <
+        NEAR_KITCHEN_KM;
+      const nearB =
+        haversineKm(store.lat, store.lng, b.dest.lat, b.dest.lng) <
+        NEAR_KITCHEN_KM;
+      if (cfg.batchMaxBearingDeg < 180 && !nearA && !nearB) {
+        const deg = angleBetween(
+          bearingDeg(store, a.dest),
+          bearingDeg(store, b.dest),
+        );
+        if (deg > cfg.batchMaxBearingDeg)
+          issues.push({
+            kind: 'direction',
+            a: a.orderId,
+            b: b.orderId,
+            value: Math.round(deg),
+          });
+      }
+    }
+  }
+  return issues;
+}
+
 export function planRoute(
   seq: PoolOrder[],
   store: Pt,
@@ -337,6 +421,7 @@ export function planRoute(
   cfg: DispatchConfig,
 ): RoutePlan | null {
   if (!seq.length) return null;
+  if (seq.length > 1 && areaIssues(seq, store, cfg).length) return null;
   const readies = seq.map((o) => o.readyAt);
   if (Math.max(...readies) - Math.min(...readies) > cfg.batchReadyGapMin * MIN)
     return null;

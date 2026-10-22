@@ -15,6 +15,7 @@ import {
   Pt,
   RiderView,
   RoutePlan,
+  areaIssues,
   bestRoute,
   driveMin,
   planRoute,
@@ -216,8 +217,21 @@ export class TripsService {
     pool: PoolOrder[],
     cfg: DispatchConfig,
     numbers: Map<number, string>,
+    store?: Pt | null,
   ): string[] {
     const reasons: string[] = [];
+    /* Same area, same direction first: the rule the kitchen thinks in. */
+    if (store) {
+      for (const i of areaIssues(pool, store, cfg)) {
+        const a = numbers.get(i.a) || `#${i.a}`,
+          b = numbers.get(i.b) || `#${i.b}`;
+        reasons.push(
+          i.kind === 'gap'
+            ? `${a} and ${b} are ${i.value} km apart (limit ${cfg.batchMaxDropGapKm} km).`
+            : `${a} and ${b} are in different directions from the kitchen (${i.value}° apart, limit ${cfg.batchMaxBearingDeg}°).`,
+        );
+      }
+    }
     const readies = pool.map((p) => p.readyAt);
     const gap = (Math.max(...readies) - Math.min(...readies)) / MIN;
     if (gap > cfg.batchReadyGapMin)
@@ -324,6 +338,8 @@ export class TripsService {
           batchMaxExtraMin: 1e9,
           batchReadyGapMin: 1e9,
           foodAgeMaxMin: 1e9,
+          batchMaxDropGapKm: 0,
+          batchMaxBearingDeg: 180,
         };
         const loose = bestRoute(
           pool.map((p) => ({ ...p, promisedAt: null })),
@@ -343,7 +359,7 @@ export class TripsService {
           error: 'Bad Request',
           canForce: true,
           message: 'These orders should not ride together.',
-          reasons: TripsService.explain(strict, pool, cfg, numbers),
+          reasons: TripsService.explain(strict, pool, cfg, numbers, store),
         });
       }
       if (!plan)
@@ -352,6 +368,8 @@ export class TripsService {
           batchMaxExtraMin: 1e9,
           batchReadyGapMin: 1e9,
           foodAgeMaxMin: 1e9,
+          batchMaxDropGapKm: 0,
+          batchMaxBearingDeg: 180,
         });
     } else if (pool.length > 1 && !input.force) {
       throw new BadRequestException({
