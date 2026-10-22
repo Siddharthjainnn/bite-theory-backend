@@ -11,7 +11,7 @@ import { AdminAuthGuard, Roles } from '../common/admin-auth.guard';
 import { requireSelfOrAdmin, requireAdmin } from '../common/req-auth.util';
 import {
   CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto, CheckoutDto, CreatePaymentDto, CancelOrderDto,
-  SetPrepVideoDto, RefundOrderDto,
+  SetPrepVideoDto, RefundOrderDto, BookExternalCourierDto,
 } from './dto';
 import { PosOrderDto } from './pos-order.dto';
 
@@ -151,6 +151,38 @@ export class OrdersController {
   ) {
     if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
     return this.service.assignRider(id, Number(body.partnerId));
+  }
+
+  /* ── External courier (Porter). Admin-only, same gate as assign-rider. ── */
+
+  /** Pickup + drop details formatted for copy-paste into porter.in. */
+  @Get(':id/dispatch-sheet')
+  dispatchSheet(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
+    if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
+    return this.service.dispatchSheet(id);
+  }
+
+  /** Record a Porter booking; call again to add the CRN / driver details. */
+  @Patch(':id/book-courier')
+  bookCourier(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: BookExternalCourierDto,
+    @Req() req: Request,
+  ) {
+    if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
+    return this.service.bookExternalCourier(id, dto);
+  }
+
+  /** Undo a Porter booking before pickup. */
+  @Patch(':id/cancel-courier')
+  cancelCourier(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { reason?: string },
+    @Req() req: Request,
+  ) {
+    if (!this.isAdmin(req)) throw new UnauthorizedException('Admin key required.');
+    const reason = typeof body?.reason === 'string' ? body.reason.slice(0, 200) : undefined;
+    return this.service.cancelExternalCourier(id, reason);
   }
   /** Admin attaches / clears a "your food being made" clip on an order. */
   @Patch(':id/prep-video')

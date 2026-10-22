@@ -48,4 +48,14 @@ export class Order {
   /* Signature feature: short "your food being made" clip the admin attaches
      to this order. Shown to the customer on the tracking page. */
   @Column({ name: 'prep_video_url', type: 'text', nullable: true }) prepVideoUrl!: string | null;
+
+  /* External courier (migrations/2026-10-23-external-courier.sql).
+     delivery_provider = who carries the food: our rider, or a booked Porter. */
+  @Column({ name: 'delivery_provider', type: 'varchar', length: 20, default: 'in_house' }) deliveryProvider!: string;
+  @Column({ name: 'external_ref', type: 'varchar', length: 80, nullable: true }) externalRef!: string | null;
+  @Column({ name: 'external_tracking_url', type: 'text', nullable: true }) externalTrackingUrl!: string | null;
+  @Column({ name: 'external_rider_name', type: 'varchar', length: 80, nullable: true }) externalRiderName!: string | null;
+  @Column({ name: 'external_rider_phone', type: 'varchar', length: 20, nullable: true }) externalRiderPhone!: string | null;
+  @Column({ name: 'external_fee', type: 'numeric', precision: 10, scale: 2, nullable: true }) externalFee!: number | null;
+  @Column({ name: 'external_booked_at', type: 'timestamptz', nullable: true }) externalBookedAt!: Date | null;
 }

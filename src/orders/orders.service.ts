@@ -18,6 +18,11 @@ import { ScratchService } from '../scratch/scratch.service';
 import { FlashService } from '../flash/flash.service';
 import { assertTransition, assertRiderMaySet } from './order-status.machine';
 import { DeliveryPartnerService } from '../delivery_partners/delivery_partners.service';
+import { BookExternalCourierDto } from './dto';
+import {
+  bookingError, buildDispatchSheet, isExternal, publicCourier, safeTrackingUrl,
+  CANCELLABLE_BOOKING_STATUSES,
+} from './courier.util';
 
 @Injectable()
 export class OrdersService {
@@ -178,6 +183,10 @@ export class OrdersService {
     }
 
     order.deliveryPartnerId = partnerId;
+    /* Switching from a Porter booking to our own rider: the order is ours to
+       carry again, so the stale courier details must not linger on the
+       customer's tracking page. (Cancel the Porter booking on porter.in.) */
+    if (isExternal(order.deliveryProvider)) this.clearExternal(order);
     if (!['out_for_delivery', 'arriving_soon'].includes(order.status)) {
       order.status = 'assigned_to_delivery';
     }
@@ -198,6 +207,196 @@ export class OrdersService {
         [saved.userId, orderId,
          `Order ${saved.orderNumber}: ${rider[0].name || 'a rider'} is handling your delivery.`]);
     }
+    return this.findOneFull(orderId);
+  }
+
+  /* ═══════════════ EXTERNAL COURIER (Porter) ═══════════════════════════════
+     The kitchen books a Porter two-wheeler on porter.in when no house rider is
+     free. These three calls make that a first-class dispatch instead of a
+     workaround:
+       GET   /orders/:id/dispatch-sheet   everything to copy into Porter
+       PATCH /orders/:id/book-courier     record the booking (re-call to update)
+       PATCH /orders/:id/cancel-courier   undo it before pickup
+     The state machine is untouched; an external booking simply satisfies the
+     "someone is carrying this" check that used to require delivery_partner_id. */
+
+  private clearExternal(order: Order) {
+    order.deliveryProvider = 'in_house';
+    order.externalRef = null;
+    order.externalTrackingUrl = null;
+    order.externalRiderName = null;
+    order.externalRiderPhone = null;
+    order.externalFee = null;
+    order.externalBookedAt = null;
+  }
+
+  /** Pickup + drop details, pre-formatted for copy-paste into porter.in. */
+  async dispatchSheet(orderId: number) {
+    const order = await this.findOne(orderId);
+    const [cust, addr, pay, cfg] = await Promise.all([
+      this.dataSource.query(
+        `SELECT first_name, last_name, mobile FROM users WHERE id = $1`, [order.userId]),
+      order.addressId
+        ? this.dataSource.query(
+            `SELECT landmark, pincode, city FROM addresses WHERE id = $1`, [order.addressId])
+        : Promise.resolve([]),
+      this.dataSource.query(
+        `SELECT method, status FROM payments WHERE order_id = $1 ORDER BY id DESC LIMIT 1`, [orderId]),
+      this.settings.get(),
+    ]);
+    const c = cust[0];
+    const inv: any = (cfg as any).invoiceConfig || {};
+    const land: any = (cfg as any).landingContent || {};
+
+    return {
+      ...buildDispatchSheet({
+        orderNumber: order.orderNumber || `#${orderId}`,
+        status: order.status,
+        total: Number(order.total),
+        walletUsed: Number(order.walletUsed || 0),
+        deliveryAddress: order.deliveryAddress,
+        deliveryLat: order.deliveryLat != null ? Number(order.deliveryLat) : null,
+        deliveryLng: order.deliveryLng != null ? Number(order.deliveryLng) : null,
+        deliveryInstructions: order.deliveryInstructions,
+        customer: {
+          name: c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() || null : null,
+          mobile: c?.mobile ?? null,
+        },
+        address: addr[0] || null,
+        store: {
+          name: inv.brandName || land.brandName || null,
+          phone: inv.phone || land.phone || null,
+          address: cfg.storeAddress || inv.addressLine || null,
+          lat: cfg.storeLat != null ? Number(cfg.storeLat) : null,
+          lng: cfg.storeLng != null ? Number(cfg.storeLng) : null,
+        },
+        payment: pay[0] || null,
+      }),
+      status: order.status,
+      provider: order.deliveryProvider || 'in_house',
+      booking: isExternal(order.deliveryProvider) ? {
+        externalRef: order.externalRef, trackingUrl: order.externalTrackingUrl,
+        riderName: order.externalRiderName, riderPhone: order.externalRiderPhone,
+        fee: order.externalFee != null ? Number(order.externalFee) : null,
+        bookedAt: order.externalBookedAt,
+      } : null,
+    };
+  }
+
+  /**
+   * Record (or update) an external courier booking.
+   *
+   * Book while cooking: a Porter driver takes 8–15 min to arrive, so the board
+   * offers this from Preparing onwards. The order's status only moves when it
+   * is already food_ready (→ assigned_to_delivery); during cooking the booking
+   * is just recorded, and "Food ready" then carries it straight to assigned.
+   */
+  async bookExternalCourier(orderId: number, dto: BookExternalCourierDto) {
+    const order = await this.findOne(orderId);
+    const alreadyBooked = isExternal(order.deliveryProvider);
+
+    /* Updating driver details on an order Porter is already carrying is
+       allowed at any live stage — the CRN and driver name usually arrive
+       AFTER the admin has hit Book. */
+    const updatingOnly = alreadyBooked
+      && ['out_for_delivery', 'arriving_soon'].includes(order.status);
+    if (!updatingOnly) {
+      const err = bookingError(order.status);
+      if (err) throw new BadRequestException(err);
+    }
+
+    /* Porter collects no cash (their API refuses COD outright). An unpaid cash
+       order sent with Porter is food handed over for free unless someone has
+       arranged payment. Make the admin say so explicitly. */
+    if (!alreadyBooked) {
+      const cod = await this.dataSource.query(
+        `SELECT amount FROM payments
+          WHERE order_id = $1 AND method = 'cod' AND status = 'pending' LIMIT 1`, [orderId]);
+      if (cod.length && !dto.codAcknowledged) {
+        throw new BadRequestException(
+          'This is an unpaid cash order and Porter does not collect cash. Collect payment by UPI ' +
+          'first, send your own rider, or confirm you have arranged payment.');
+      }
+    }
+
+    const trackingUrl = dto.trackingUrl ? safeTrackingUrl(dto.trackingUrl) : undefined;
+    if (dto.trackingUrl && !trackingUrl) {
+      throw new BadRequestException('Tracking link must be a full https:// URL.');
+    }
+
+    /* Moving from a house rider to Porter frees that rider for the next order. */
+    if (order.deliveryPartnerId) {
+      await this.dataSource.query(
+        `UPDATE delivery_partners SET is_available = true WHERE id = $1`, [order.deliveryPartnerId]);
+      order.deliveryPartnerId = null as unknown as number;
+    }
+
+    order.deliveryProvider = dto.provider;
+    if (dto.externalRef !== undefined) order.externalRef = dto.externalRef.trim() || null;
+    if (trackingUrl !== undefined) order.externalTrackingUrl = trackingUrl;
+    if (dto.riderName !== undefined) order.externalRiderName = dto.riderName.trim() || null;
+    if (dto.riderPhone !== undefined) order.externalRiderPhone = dto.riderPhone.replace(/[^\d+]/g, '') || null;
+    if (dto.fee !== undefined) order.externalFee = dto.fee;
+    if (!order.externalBookedAt) order.externalBookedAt = new Date();
+
+    const moved = order.status === 'food_ready';
+    if (moved) {
+      assertTransition(order.status, 'assigned_to_delivery');
+      order.status = 'assigned_to_delivery';
+    }
+    const saved = await this.repo.save(order);
+
+    const label = dto.provider === 'porter' ? 'Porter' : 'external courier';
+    const ref = saved.externalRef ? ` (${saved.externalRef})` : '';
+    await this.historyRepo.save(this.historyRepo.create({
+      orderId,
+      status: moved ? 'assigned_to_delivery' : saved.status,
+      note: alreadyBooked
+        ? `${label} booking updated${ref}`
+        : `${label} booked${ref} by admin`,
+    }));
+
+    /* Tell the customer once per order — not on every detail edit, and not
+       again when the kitchen cancels one Porter and books another. */
+    const toldAlready = !alreadyBooked && saved.userId
+      ? (await this.dataSource.query(
+          `SELECT 1 FROM notifications WHERE order_id = $1 AND title = '🛵 Delivery partner booked' LIMIT 1`,
+          [orderId])).length > 0
+      : true;
+    if (!toldAlready) {
+      await this.dataSource.query(
+        `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+         VALUES ($1,$2,'in_app','🛵 Delivery partner booked',$3,true)`,
+        [saved.userId, orderId,
+         `Order ${saved.orderNumber}: a ${label} partner will pick up your food as soon as it's packed.`]);
+    }
+    return this.findOneFull(orderId);
+  }
+
+  /** Undo a courier booking before pickup. Order returns to the kitchen's queue. */
+  async cancelExternalCourier(orderId: number, reason?: string) {
+    const order = await this.findOne(orderId);
+    if (!isExternal(order.deliveryProvider)) {
+      throw new BadRequestException('No courier is booked for this order.');
+    }
+    if (!CANCELLABLE_BOOKING_STATUSES.includes(order.status)) {
+      throw new BadRequestException(
+        'The courier already has the food. Mark it delivered, or cancel the order.');
+    }
+    this.clearExternal(order);
+
+    /* assigned_to_delivery with nobody carrying it is a dead state — the board
+       would show it under Picked Up with no one to pick it up. Put it back to
+       Ready. A deliberate exception to the forward-only machine: no money
+       moves, and it is written to history like every other change. */
+    const revert = order.status === 'assigned_to_delivery';
+    if (revert) order.status = 'food_ready';
+    await this.repo.save(order);
+    await this.historyRepo.save(this.historyRepo.create({
+      orderId,
+      status: order.status,
+      note: `Courier booking cancelled${reason ? `: ${reason}` : ''}${revert ? ' — back to Ready' : ''}`,
+    }));
     return this.findOneFull(orderId);
   }
 
@@ -301,7 +500,11 @@ export class OrdersService {
         throw new ForbiddenException('Not your order');
       }
     }
-    return this.findOneFull(id);
+    const full = await this.findOneFull(id);
+    if (isAdmin) return full;
+    /* What we pay Porter is our business, not the customer's. */
+    const { externalFee: _fee, ...rest } = full as any;
+    return { ...rest, courier: publicCourier(full as any) };
   }
 
   async trackOwned(id: number, isAdmin: boolean, authUserId: number | null) {
@@ -386,7 +589,10 @@ export class OrdersService {
       }
     }
 
-    return { ...full, etaMinutes, partner, store };
+    /* Strip our cost and internal ref from the customer payload; expose only
+       what the customer needs to find their food. */
+    const { externalFee: _fee, externalRef: _ref, ...publicFull } = full as any;
+    return { ...publicFull, etaMinutes, partner, store, courier: publicCourier(full as any) };
   }
 
   /**
@@ -1612,9 +1818,9 @@ export class OrdersService {
     /* An order cannot move to (or past) dispatch without a rider attached.
        This is what prevents the "out_for_delivery with NULL rider" bug. */
     if (['assigned_to_delivery', 'out_for_delivery', 'arriving_soon'].includes(dto.status)
-        && !order.deliveryPartnerId) {
+        && !order.deliveryPartnerId && !isExternal(order.deliveryProvider)) {
       throw new BadRequestException(
-        'Assign a delivery partner before moving this order out for delivery.');
+        'Assign a rider or book a Porter before moving this order out for delivery.');
     }
 
     /* Don't let the rider take cash while the customer is mid-scan. Without
@@ -1675,7 +1881,12 @@ export class OrdersService {
     order.status = dto.status;
     /* lifecycle timestamps */
     const now = new Date();
-    if (dto.status === 'order_confirmed' && !order.acceptedAt) order.acceptedAt = now;
+    /* The Live Orders board accepts straight into preparing_food (skipping
+       order_confirmed), so accepted_at was never stamped and the tracking ETA
+       counted prep time from order placement. Stamp it on either. */
+    if (['order_confirmed', 'preparing_food'].includes(dto.status) && !order.acceptedAt) {
+      order.acceptedAt = now;
+    }
     if (dto.status === 'out_for_delivery' && !order.pickedUpAt) {
       order.pickedUpAt = now;
       /* OTP is already minted at order creation — nothing to do here.
@@ -1760,7 +1971,18 @@ export class OrdersService {
       delivered:            { title: '🎉 Delivered — enjoy!', body: 'Hope it was delicious. Rate your order?' },
       cancelled:            { title: '❌ Order cancelled', body: 'Your order was cancelled. Any payment will be refunded.' },
     };
-    const m = MSG[dto.status];
+    let m = MSG[dto.status];
+    /* Porter order heading out: the customer's best tracker is Porter's own
+       live link, not our map (there is no house rider GPS to show). */
+    if (m && dto.status === 'out_for_delivery' && isExternal(saved.deliveryProvider)) {
+      const link = safeTrackingUrl(saved.externalTrackingUrl);
+      m = {
+        title: m.title,
+        body: link
+          ? `Your order is on its way with Porter. Track live: ${link}`
+          : 'Your order is on its way with our Porter delivery partner.',
+      };
+    }
     if (m && saved.userId) {
       await this.dataSource.query(
         `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)

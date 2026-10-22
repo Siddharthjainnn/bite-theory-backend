@@ -125,3 +125,20 @@ export class RefundOrderDto {
   /** Omit for a full refund; supply rupees for a partial. */
   @IsOptional() @IsNumber() @Min(1) amount?: number;
 }
+
+/**
+ * Admin books (or updates) an external courier for an order.
+ * Every field except `provider` is optional: the admin can mark "Porter booked"
+ * the moment they hit Book on porter.in, and paste the CRN / driver details
+ * when Porter assigns someone a minute later (call again to update).
+ */
+export class BookExternalCourierDto {
+  @IsIn(['porter', 'other']) provider!: 'porter' | 'other';
+  @IsOptional() @IsString() @MaxLength(80) externalRef?: string;
+  @IsOptional() @IsString() @MaxLength(500) trackingUrl?: string;
+  @IsOptional() @IsString() @MaxLength(80) riderName?: string;
+  @IsOptional() @IsString() @MaxLength(20) riderPhone?: string;
+  @IsOptional() @Type(() => Number) @IsNumber() @Min(0) @Max(2000) fee?: number;
+  /** Required to book a courier for an unpaid cash order (Porter collects no cash). */
+  @IsOptional() @IsBoolean() codAcknowledged?: boolean;
+}
