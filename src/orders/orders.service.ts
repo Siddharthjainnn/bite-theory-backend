@@ -1,4 +1,4 @@
-import { ForbiddenException,
+import { ForbiddenException, Logger,
   Injectable, NotFoundException, BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
@@ -20,12 +20,19 @@ import { assertTransition, assertRiderMaySet } from './order-status.machine';
 import { DeliveryPartnerService } from '../delivery_partners/delivery_partners.service';
 import { BookExternalCourierDto } from './dto';
 import {
+  attachToTrip, detachFromTrip, markStopDelivered, markTripPickedUp, refreshRiderAvailability,
+} from '../delivery/trip.sql';
+import { EtaService } from '../delivery/eta.service';
+import { makegoodFor, normalizeDispatch } from '../delivery/dispatch.algo';
+import {
   bookingError, buildDispatchSheet, isExternal, publicCourier, safeTrackingUrl,
   CANCELLABLE_BOOKING_STATUSES,
 } from './courier.util';
+import { returned } from '../common/sql.util';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
   constructor(
     @InjectRepository(Order) private repo: Repository<Order>,
     @InjectRepository(OrderStatusHistory) private historyRepo: Repository<OrderStatusHistory>,
@@ -37,6 +44,7 @@ export class OrdersService {
     private readonly scratch: ScratchService,
     private readonly flash: FlashService,
     private readonly partners: DeliveryPartnerService,
+    private readonly eta: EtaService,
   ) {}
 
   async findAll(filters: { userId?: number; deliveryPartnerId?: number; active?: boolean } = {}) {
@@ -140,14 +148,17 @@ export class OrdersService {
    * Admin dispatch: attach a SPECIFIC rider to an order and move it to
    * assigned_to_delivery. Supports reassigning (frees the previous rider).
    */
-  async assignRider(orderId: number, partnerId: number) {
+  async assignRider(
+    orderId: number, partnerId: number,
+    opts: { tripId?: number; source?: 'admin' | 'suggested' | 'auto' } = {},
+  ) {
     const order = await this.findOne(orderId);
     if (['delivered', 'cancelled'].includes(order.status)) {
       throw new BadRequestException(`Order is already ${order.status}.`);
     }
 
     const rider = await this.dataSource.query(
-      `SELECT id, name, is_active FROM delivery_partners WHERE id = $1`, [partnerId]);
+      `SELECT id, name, is_active, capacity FROM delivery_partners WHERE id = $1`, [partnerId]);
     if (!rider.length || rider[0].is_active === false) {
       throw new BadRequestException('That rider is not active.');
     }
@@ -175,29 +186,43 @@ export class OrdersService {
       }
     }
 
-    // reassignment → free the previously assigned rider
-    if (order.deliveryPartnerId && Number(order.deliveryPartnerId) !== partnerId) {
-      await this.dataSource.query(
-        `UPDATE delivery_partners SET is_available = true WHERE id = $1`,
-        [order.deliveryPartnerId]);
-    }
+    const previousRider = order.deliveryPartnerId && Number(order.deliveryPartnerId) !== partnerId
+      ? Number(order.deliveryPartnerId) : null;
 
     order.deliveryPartnerId = partnerId;
     /* Switching from a Porter booking to our own rider: the order is ours to
        carry again, so the stale courier details must not linger on the
        customer's tracking page. (Cancel the Porter booking on porter.in.) */
     if (isExternal(order.deliveryProvider)) this.clearExternal(order);
-    if (!['out_for_delivery', 'arriving_soon'].includes(order.status)) {
+    /* A rider can be RESERVED while the food is still cooking (trips are
+       planned ahead). Jumping the order to assigned_to_delivery then would skip
+       the kitchen's "Food ready" step, so the status only moves from Ready. */
+    const reservedEarly = ['order_received', 'order_confirmed', 'preparing_food'].includes(order.status);
+    if (!reservedEarly && !['out_for_delivery', 'arriving_soon'].includes(order.status)) {
       order.status = 'assigned_to_delivery';
     }
     const saved = await this.repo.save(order);
 
-    await this.dataSource.query(
-      `UPDATE delivery_partners SET is_available = false WHERE id = $1`, [partnerId]);
+    /* Put it on the rider's trip (their open one if it has room, else a new
+       one), then recompute who is free. Replaces the old flag flips that freed
+       a rider who still had a second bag on the bike. */
+    try {
+      await attachToTrip(this.dataSource, orderId, partnerId, {
+        tripId: opts.tripId, capacity: Number(rider[0].capacity) || 2, source: opts.source,
+      });
+    } catch (e: unknown) {
+      throw new BadRequestException(e instanceof Error ? e.message : 'Could not add the order to that trip.');
+    }
+    await refreshRiderAvailability(this.dataSource, partnerId);
+    await refreshRiderAvailability(this.dataSource, previousRider);
+
+    const by = opts.source === 'auto' ? 'auto-dispatch' : 'admin';
     await this.historyRepo.save(this.historyRepo.create({
       orderId,
-      status: 'assigned_to_delivery',
-      note: `Assigned to ${rider[0].name || 'rider #' + partnerId} by admin`,
+      status: saved.status,
+      note: reservedEarly
+        ? `${rider[0].name || 'Rider #' + partnerId} reserved by ${by} (food still cooking)`
+        : `Assigned to ${rider[0].name || 'rider #' + partnerId} by ${by}`,
     }));
 
     if (saved.userId) {
@@ -219,6 +244,44 @@ export class OrdersService {
        PATCH /orders/:id/cancel-courier   undo it before pickup
      The state machine is untouched; an external booking simply satisfies the
      "someone is carrying this" check that used to require delivery_partner_id. */
+
+  /** Rider's drive back to the kitchen from this order's door, in minutes. */
+  private returnMinutes(cfg: any, order: Order): number | null {
+    if (cfg.storeLat == null || order.deliveryLat == null) return null;
+    const km = haversineKm(Number(order.deliveryLat), Number(order.deliveryLng),
+      Number(cfg.storeLat), Number(cfg.storeLng));
+    return km * (60 / normalizeDispatch(cfg.dispatchConfig).defaultSpeedKmph);
+  }
+
+  /**
+   * Phase 5: late make-good. Delivered well past the promise -> a wallet credit
+   * and an apology, automatically, once per order. Off until an amount is set.
+   * The UPDATE ... WHERE late_makegood_at IS NULL is the idempotency lock:
+   * a retried "delivered" can never pay twice.
+   */
+  private async lateMakegood(order: Order) {
+    if (!order.userId || !order.deliveredAt || !order.promisedAt) return;
+    const cfg = normalizeDispatch((await this.settings.get()).dispatchConfig);
+    const amount = makegoodFor(new Date(order.deliveredAt).getTime(), new Date(order.promisedAt).getTime(), cfg);
+    if (amount <= 0) return;
+    const claimed = returned(await this.dataSource.query(
+      `UPDATE orders SET late_makegood_at = now() WHERE id = $1 AND late_makegood_at IS NULL RETURNING id`,
+      [order.id]));
+    if (!claimed.length) return;
+    const lateBy = Math.round((new Date(order.deliveredAt).getTime() - new Date(order.promisedAt).getTime()) / 60000);
+    await this.dataSource.query(
+      `UPDATE users SET wallet_balance = COALESCE(wallet_balance,0) + $1, updated_at = now() WHERE id = $2`,
+      [amount, order.userId]);
+    await this.dataSource.query(
+      `INSERT INTO wallet_transactions (user_id, type, amount, reason, order_id)
+       VALUES ($1,'credit',$2,$3,$4)`,
+      [order.userId, amount, `Sorry we were ${lateBy} min late on ${order.orderNumber}`, order.id]);
+    await this.dataSource.query(
+      `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
+       VALUES ($1,$2,'in_app','🙏 Sorry for the wait',$3,true)`,
+      [order.userId, order.id,
+       `Order ${order.orderNumber} arrived ${lateBy} min after we promised. We've added ₹${amount} to your wallet.`]);
+  }
 
   private clearExternal(order: Order) {
     order.deliveryProvider = 'in_house';
@@ -325,11 +388,10 @@ export class OrdersService {
     }
 
     /* Moving from a house rider to Porter frees that rider for the next order. */
-    if (order.deliveryPartnerId) {
-      await this.dataSource.query(
-        `UPDATE delivery_partners SET is_available = true WHERE id = $1`, [order.deliveryPartnerId]);
-      order.deliveryPartnerId = null as unknown as number;
-    }
+    const freedRider = order.deliveryPartnerId ? Number(order.deliveryPartnerId) : null;
+    if (freedRider) order.deliveryPartnerId = null as unknown as number;
+    await detachFromTrip(this.dataSource, orderId);
+    order.tripId = null;
 
     order.deliveryProvider = dto.provider;
     if (dto.externalRef !== undefined) order.externalRef = dto.externalRef.trim() || null;
@@ -345,6 +407,7 @@ export class OrdersService {
       order.status = 'assigned_to_delivery';
     }
     const saved = await this.repo.save(order);
+    await refreshRiderAvailability(this.dataSource, freedRider);
 
     const label = dto.provider === 'porter' ? 'Porter' : 'external courier';
     const ref = saved.externalRef ? ` (${saved.externalRef})` : '';
@@ -589,10 +652,47 @@ export class OrdersService {
       }
     }
 
+    /* Phase 3: on a shared trip, earlier drops come first. Count them in the
+       ETA (and tell the customer how many), instead of pretending the rider
+       is driving straight to them. */
+    let stopsBefore = 0;
+    if ((full as any).tripId && destLat != null && destLng != null && !terminal) {
+      try {
+        const stops = await this.dataSource.query(
+          `SELECT s.order_id, s.seq, s.delivered_at, o.delivery_lat AS lat, o.delivery_lng AS lng
+             FROM trip_stops s JOIN orders o ON o.id = s.order_id
+            WHERE s.trip_id = $1 ORDER BY s.seq`, [(full as any).tripId]);
+        const me = stops.find((x: any) => Number(x.order_id) === Number(id));
+        const before = me
+          ? stops.filter((x: any) => x.seq < me.seq && !x.delivered_at && x.lat != null)
+          : [];
+        stopsBefore = before.length;
+        if (before.length) {
+          const pts = before.map((b: any) => ({ lat: Number(b.lat), lng: Number(b.lng) }));
+          const chainKm = (from: { lat: number; lng: number }) => {
+            let km = 0, here = from;
+            for (const pt of [...pts, { lat: destLat, lng: destLng }]) {
+              km += haversineKm(here.lat, here.lng, pt.lat, pt.lng); here = pt;
+            }
+            return km;
+          };
+          if (hasRider && pickedUp) {
+            etaMinutes = Math.max(1, Math.round(minsFromKm(chainKm({ lat: Number(partner.lat), lng: Number(partner.lng) }))));
+          } else if (store && etaMinutes != null) {
+            const direct = haversineKm(store.lat, store.lng, destLat, destLng);
+            etaMinutes = Math.round(etaMinutes + minsFromKm(chainKm(store) - direct));
+          }
+        }
+      } catch { /* trips not migrated yet: keep the direct ETA */ }
+    }
+    const promisedAt = (full as any).promisedAt ? new Date((full as any).promisedAt).getTime() : null;
+    const runningLate = !terminal && promisedAt != null && etaMinutes != null
+      && Date.now() + etaMinutes * 60000 > promisedAt;
+
     /* Strip our cost and internal ref from the customer payload; expose only
        what the customer needs to find their food. */
     const { externalFee: _fee, externalRef: _ref, ...publicFull } = full as any;
-    return { ...publicFull, etaMinutes, partner, store, courier: publicCourier(full as any) };
+    return { ...publicFull, etaMinutes, partner, store, courier: publicCourier(full as any), stopsBefore, runningLate };
   }
 
   /**
@@ -817,7 +917,10 @@ export class OrdersService {
    * Live delivery quote — mirrors checkout's pricing exactly so the customer
    * sees the real charge the moment they select an address (no jump later).
    */
-  async deliveryQuote(input: { addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number }) {
+  async deliveryQuote(input: {
+    addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number;
+    items?: { productId: number; quantity: number }[];
+  }) {
     const cfg = await this.settings.get();
     let dLat = input.deliveryLat ?? null;
     let dLng = input.deliveryLng ?? null;
@@ -843,10 +946,19 @@ export class OrdersService {
     const outOfRange = radius > 0 && distanceKm != null && distanceKm > radius;
     const noPin = radius > 0 && (dLat == null || dLng == null);
 
+    /* Phase 2: the honest range ("30-40 min"), from the cart + kitchen load +
+       learned travel. etaMinutes stays for older app builds. */
+    let etaMin: number | null = null, etaMax: number | null = null;
+    try {
+      const q = await this.eta.quote({ lines: input.items || [], distanceKm });
+      etaMin = q.minMin; etaMax = q.maxMin;
+    } catch { /* fall back to etaMinutes */ }
+
     return {
       deliveryCharge,
       distanceKm: distanceKm != null ? Math.round(distanceKm * 10) / 10 : null,
-      etaMinutes,
+      etaMinutes: etaMax ?? etaMinutes,
+      etaMin, etaMax,
       zone: OrdersService.zoneForPincode(pincode),
       pincode,
       freeAbove: OrdersService.freeDeliveryThreshold(cfg, distanceKm),
@@ -938,7 +1050,10 @@ export class OrdersService {
       ? await this.razorpay.fetchOrderAmountPaise(dto.razorpayOrderId || '')
       : 0;
 
-    return this.dataSource.transaction(async (mgr) => {
+    /* Filled inside the transaction, used after it commits (see below). */
+    let promiseFor: { orderId: number; lines: { productId: number | null; quantity: number }[]; distanceKm: number | null } | null = null;
+
+    const result = await this.dataSource.transaction(async (mgr) => {
       /* 0) idempotency — if this payment already produced an order (browser
          handler AND webhook can both land here), return the existing order
          instead of double-charging inventory/wallet/coupons. */
@@ -1322,8 +1437,39 @@ export class OrdersService {
         this.mail.orderPlacedHtml({ orderNumber, total, items: lines, deliveryAddress }),
       );
 
+      promiseFor = {
+        orderId,
+        lines: [
+          ...lines.map((l: any) => ({ productId: Number(l.productId), quantity: Number(l.quantity) })),
+          ...thaliLines.map(() => ({ productId: null, quantity: 1 })),
+        ],
+        distanceKm,
+      };
       return { ...order, id: orderId, items: lines, pointsEarned: points };
     });
+
+    /* Phases 1+2: save the promise AFTER the order is committed. A failed
+       statement inside a Postgres transaction aborts the whole transaction,
+       so an ETA problem must never be able to lose a paid order. */
+    const promise = promiseFor ? await this.stampPromise(promiseFor) : null;
+    return promise ? { ...result, ...promise } : result;
+  }
+
+  /** Quote the range for a just-placed order and save the high end as the promise. */
+  private async stampPromise(p: { orderId: number; lines: { productId: number | null; quantity: number }[]; distanceKm: number | null }) {
+    try {
+      const q = await this.eta.quote({ lines: p.lines, distanceKm: p.distanceKm, exceptOrderId: p.orderId });
+      const [row] = returned(await this.dataSource.query(
+        `UPDATE orders
+            SET promised_min = $2, promised_max = $3, prep_estimate_min = $4, eta_minutes = $3,
+                promised_at = placed_at::timestamptz + make_interval(mins => $3::int)
+          WHERE id = $1
+        RETURNING promised_at`, [p.orderId, q.minMin, q.maxMin, q.prepMin]));
+      return { promisedMin: q.minMin, promisedMax: q.maxMin, promisedAt: row?.promised_at ?? null };
+    } catch (e: unknown) {
+      this.logger.warn(`Could not save the delivery promise for order ${p.orderId}: ${e instanceof Error ? e.message : e}`);
+      return null;
+    }
   }
 
   /** POS: find a customer by mobile for counter auto-fill. */
@@ -1698,8 +1844,8 @@ export class OrdersService {
 
       // 4) give back the coupon: drop its redemption row and decrement usage.
       if (order.couponId) {
-        const del = await this.dataSource.query(
-          `DELETE FROM coupon_redemptions WHERE order_id = $1 RETURNING id`, [orderId]);
+        const del = returned(await this.dataSource.query(
+          `DELETE FROM coupon_redemptions WHERE order_id = $1 RETURNING id`, [orderId]));
         if (del.length) {
           await this.dataSource.query(
             `UPDATE coupons SET used_count = GREATEST(COALESCE(used_count,0) - 1, 0)
@@ -1887,6 +2033,9 @@ export class OrdersService {
     if (['order_confirmed', 'preparing_food'].includes(dto.status) && !order.acceptedAt) {
       order.acceptedAt = now;
     }
+    /* Phase 1: when the food was actually ready. Food waiting for a rider is
+       the main cause of cold food and was invisible until now. */
+    if (dto.status === 'food_ready' && !order.readyAt) order.readyAt = now;
     if (dto.status === 'out_for_delivery' && !order.pickedUpAt) {
       order.pickedUpAt = now;
       /* OTP is already minted at order creation — nothing to do here.
@@ -1898,12 +2047,6 @@ export class OrdersService {
     if (dto.status === 'delivered') {
       order.deliveredAt = now;
       if (order.deliveryPartnerId) {
-        await this.dataSource.query(
-          `UPDATE delivery_partners SET is_available = true WHERE id = $1`, [order.deliveryPartnerId]);
-        /* §3.3: clear rider's last position so it doesn't leak into idle state */
-        await this.dataSource.query(
-          `UPDATE delivery_partners SET current_lat = NULL, current_lng = NULL WHERE id = $1`,
-          [order.deliveryPartnerId]);
         /* §4.1/§4.2: credit the rider — base fare + distance pay + THE TIP.
            ON CONFLICT (order_id) keeps this idempotent under retries. */
         const cfg = await this.settings.get();
@@ -1920,16 +2063,41 @@ export class OrdersService {
            Math.round(distancePay * 100) / 100, tip, Math.round(totalPay * 100) / 100]);
       }
     }
-    if (dto.status === 'cancelled') {
-      order.cancelledAt = now;
-      // free the assigned rider so they don't stay is_available=false forever
-      if (order.deliveryPartnerId) {
-        await this.dataSource.query(
-          `UPDATE delivery_partners SET is_available = true WHERE id = $1`,
-          [order.deliveryPartnerId]);
-      }
-    }
+    if (dto.status === 'cancelled') order.cancelledAt = now;
     const saved = await this.repo.save(order);
+
+    /* ── trips + rider availability (Phase 3) ────────────────────────────
+       A rider is free when their LAST bag is delivered, not after the first. */
+    if (dto.status === 'out_for_delivery') await markTripPickedUp(this.dataSource, id);
+    if (dto.status === 'delivered') {
+      const cfg = await this.settings.get();
+      const trip = await markStopDelivered(this.dataSource, id, this.returnMinutes(cfg, order));
+      if (order.deliveryPartnerId) {
+        await refreshRiderAvailability(this.dataSource, order.deliveryPartnerId);
+        if (!trip.tripId || trip.done) {
+          /* §3.3: clear the rider's last position once the run is over, so it
+             doesn't leak into idle state — but not mid-trip, where the next
+             customer's ETA depends on it. */
+          await this.dataSource.query(
+            `UPDATE delivery_partners SET current_lat = NULL, current_lng = NULL WHERE id = $1`,
+            [order.deliveryPartnerId]);
+        }
+        /* Batch bonus: per extra order on the trip, paid on the last drop so a
+           second bag is worth the rider's while. Idempotent per order row. */
+        const bonus = trip.done && trip.total > 1
+          ? normalizeDispatch(cfg.dispatchConfig).batchBonus * (trip.total - 1) : 0;
+        if (bonus > 0) {
+          await this.dataSource.query(
+            `UPDATE rider_earnings SET batch_bonus = $2, total = total + $2
+              WHERE order_id = $1 AND COALESCE(batch_bonus, 0) = 0`, [id, bonus]);
+        }
+      }
+      await this.lateMakegood(saved).catch(() => { /* never block a delivery on a goodwill credit */ });
+    }
+    if (dto.status === 'cancelled') {
+      await detachFromTrip(this.dataSource, id);
+      await refreshRiderAvailability(this.dataSource, order.deliveryPartnerId);
+    }
 
     await this.historyRepo.save(this.historyRepo.create({ orderId: id, status: dto.status, note: dto.note }));
     if (dto.status === 'delivered') {
@@ -1942,10 +2110,13 @@ export class OrdersService {
        this UPDATE matches nothing and the rider is correctly credited with ZERO
        cash. Cash-in-hand only moves when actual cash actually moved. */
     if (dto.status === 'delivered') {
-      const cash = await this.dataSource.query(
+      /* returned(): UPDATE ... RETURNING comes back as [rows, count]. Reading it
+         as rows recorded a NaN 'collect' on EVERY rider delivery, prepaid ones
+         too, which made each rider's cash total NaN and the cash cap inert. */
+      const cash = returned(await this.dataSource.query(
         `UPDATE payments SET status = 'paid'
           WHERE order_id = $1 AND method = 'cod' AND status = 'pending'
-        RETURNING amount`, [id]);
+        RETURNING amount`, [id]));
 
       if (cash.length && order.deliveryPartnerId) {
         await this.dataSource.query(

@@ -1,4 +1,7 @@
-import { Controller, Get, Patch, Body } from '@nestjs/common';
+import { Controller, Get, Patch, Body, Req } from '@nestjs/common';
+import { Request } from 'express';
+import { isAdminReq } from '../common/req-auth.util';
+import { verifyAdminJwt } from '../common/admin-auth.guard';
 import { SettingsService } from './settings.service';
 import { UpdateSettingsDto } from './update-settings.dto';
 
@@ -8,8 +11,14 @@ export class SettingsController {
 
   /** Public: storefront reads delivery charge, min/max, hours. */
   @Get()
-  get() {
-    return this.service.get();
+  async get(@Req() req: Request) {
+    const s = await this.service.get();
+    /* The storefront reads this endpoint publicly. Delivery rules (make-good
+       amount, batch bonus, dispatch tuning) are for staff only. */
+    const bearer = ((req.headers['authorization'] as string) || '').replace(/^Bearer\s+/i, '');
+    if (isAdminReq(req) || verifyAdminJwt(bearer)) return s;
+    const { dispatchConfig: _hidden, ...pub } = s as any;
+    return pub;
   }
 
   /** Public: "are we open right now?" + friendly closed message. */

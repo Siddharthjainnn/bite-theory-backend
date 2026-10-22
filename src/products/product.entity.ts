@@ -47,6 +47,10 @@ export class Product {
   @Column({ type: 'numeric', default: 0 })
   rating: number;
 
+  /* Minutes this dish takes to cook (NULL = store default). Drives the ETA. */
+  @Column({ type: 'integer', name: 'prep_minutes', nullable: true })
+  prepMinutes: number | null;
+
   // your enum product_status has values: 'active' | 'inactive'
   @Column({ type: 'enum', enum: ['active', 'inactive'], default: 'active' })
   status: string;

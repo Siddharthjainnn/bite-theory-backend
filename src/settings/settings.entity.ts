@@ -189,6 +189,11 @@ export class StoreSettings {
   @Column({ type: 'varchar', name: 'wallet_note', nullable: true })
   walletNote: string;
 
+  /* Delivery rules: batching limits, time-model fallbacks, promises,
+     auto-dispatch. Shape + defaults: src/delivery/dispatch.algo.ts. */
+  @Column({ type: 'jsonb', name: 'dispatch_config', nullable: true })
+  dispatchConfig: Record<string, unknown> | null;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

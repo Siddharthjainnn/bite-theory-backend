@@ -24,6 +24,7 @@ export class DeliveryPartnerService {
     return this.dataSource.query(
       `SELECT dp.id, dp.name, dp.mobile, dp.vehicle_no AS "vehicleNo",
               dp.is_available AS "isAvailable",
+              dp.shift_status AS "shiftStatus",
               COUNT(o.id) FILTER (
                 WHERE o.status NOT IN ('delivered','cancelled')
               )::int AS "activeOrders"
@@ -31,7 +32,7 @@ export class DeliveryPartnerService {
          LEFT JOIN orders o ON o.delivery_partner_id = dp.id
         WHERE dp.is_active = true
         GROUP BY dp.id
-        ORDER BY dp.is_available DESC, "activeOrders" ASC, dp.name ASC`);
+        ORDER BY (dp.shift_status = 'online') DESC, dp.is_available DESC, "activeOrders" ASC, dp.name ASC`);
   }
 
   async findOne(id: number) {

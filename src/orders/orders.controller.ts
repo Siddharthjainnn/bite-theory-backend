@@ -238,8 +238,17 @@ export class OrdersController {
       the customer picks an address is exactly what they'll pay. Returns charge,
       distance, ETA, and the delivery zone (by pincode). */
   @Post('delivery-quote')
-  deliveryQuote(@Body() dto: { addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number }) {
-    return this.service.deliveryQuote(dto);
+  deliveryQuote(@Body() dto: {
+    addressId?: number; deliveryLat?: number; deliveryLng?: number; subtotal?: number;
+    items?: { productId: number; quantity: number }[];
+  }) {
+    /* items are optional and only shape the ETA range; sanitise, never trust */
+    const items = Array.isArray(dto?.items)
+      ? dto.items.slice(0, 30)
+          .map((i) => ({ productId: Number(i?.productId), quantity: Math.min(20, Math.max(1, Number(i?.quantity) || 1)) }))
+          .filter((i) => Number.isInteger(i.productId) && i.productId > 0)
+      : [];
+    return this.service.deliveryQuote({ ...dto, items });
   }
 
   /** POS: look up a customer by phone so the counter screen can auto-fill their

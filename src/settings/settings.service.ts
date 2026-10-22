@@ -1,3 +1,4 @@
+import { normalizeDispatch, DispatchConfig } from '../delivery/dispatch.algo';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -126,12 +127,23 @@ export class SettingsService {
     }
     // merge invoice defaults so newly-added keys are always present
     s.invoiceConfig = { ...DEFAULT_INVOICE, ...(s.invoiceConfig || {}) };
+    /* always a complete, typed config — callers never see a missing key */
+    s.dispatchConfig = normalizeDispatch(s.dispatchConfig) as unknown as Record<string, unknown>;
     return s;
   }
 
+  /** Typed delivery rules. */
+  async dispatch(): Promise<DispatchConfig> {
+    return normalizeDispatch((await this.get()).dispatchConfig);
+  }
+
   async update(dto: UpdateSettingsDto): Promise<StoreSettings> {
-    await this.get(); // ensure row exists
-    await this.repo.update(1, { ...(dto as Partial<StoreSettings>), updatedAt: new Date() });
+    const cur = await this.get(); // ensure row exists
+    /* partial edits to the rules merge over what is stored, then normalise */
+    if (dto.dispatchConfig) {
+      dto.dispatchConfig = normalizeDispatch({ ...(cur.dispatchConfig || {}), ...dto.dispatchConfig }) as unknown as Record<string, unknown>;
+    }
+    await this.repo.update(1, { ...(dto as Partial<StoreSettings>), updatedAt: new Date() } as any);
     return this.get();
   }
 

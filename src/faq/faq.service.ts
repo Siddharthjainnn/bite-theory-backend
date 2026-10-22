@@ -8,6 +8,7 @@ import {
   UpdateFaqArticleDto, UpdateFaqCategoryDto,
 } from './dto';
 import { AuditService } from '../audit_logs/audit.service';
+import { returned } from '../common/sql.util';
 
 const slugify = (s: string) =>
   s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -93,10 +94,10 @@ export class FaqService {
           [articleId, userId, dto.helpful, dto.comment ?? null]);
       } catch (e: any) {
         console.error('[faq.feedback] upsert failed, using fallback:', e?.message || e);
-        const upd = await this.dataSource.query(
+        const upd = returned(await this.dataSource.query(
           `UPDATE faq_feedback SET helpful = $3, comment = $4, created_at = now()
             WHERE article_id = $1 AND user_id = $2 RETURNING id`,
-          [articleId, userId, dto.helpful, dto.comment ?? null]);
+          [articleId, userId, dto.helpful, dto.comment ?? null]));
         if (!upd.length) {
           await this.dataSource.query(
             `INSERT INTO faq_feedback (article_id, user_id, helpful, comment)

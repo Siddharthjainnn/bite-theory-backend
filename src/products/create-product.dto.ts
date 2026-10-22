@@ -1,6 +1,7 @@
 import {
   IsString, IsNotEmpty, IsNumber, IsOptional,
   IsIn, Min, IsUrl, ValidateIf, IsBoolean, Max } from 'class-validator';
+import { IsInt } from 'class-validator';
 
 export class CreateProductDto {
   @IsString() @IsNotEmpty()
@@ -47,4 +48,6 @@ export class CreateProductDto {
   @IsOptional() @IsBoolean() isVeg?: boolean;
   @IsOptional() @IsString() specialTag?: string;
   @IsOptional() @IsBoolean() isSpinWheel?: boolean;
+  /* cook time in minutes; null clears it back to the store default */
+  @IsOptional() @IsInt() @Min(1) @Max(120) prepMinutes?: number | null;
 }

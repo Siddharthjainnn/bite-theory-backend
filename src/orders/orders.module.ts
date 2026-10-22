@@ -11,11 +11,13 @@ import { ThaliModule } from '../thali/thali.module';
 import { ScratchModule } from '../scratch/scratch.module';
 import { FlashModule } from '../flash/flash.module';
 import { DeliveryPartnerModule } from '../delivery_partners/delivery_partners.module';
+import { EtaModule } from '../delivery/eta.module';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Order, OrderStatusHistory]), SettingsModule, ThaliModule,
-    ScratchModule, FlashModule, DeliveryPartnerModule],
+    ScratchModule, FlashModule, DeliveryPartnerModule, EtaModule],
   controllers: [OrdersController],
   providers: [OrdersService, RazorpayService, MailService],
+  exports: [OrdersService], // DeliveryModule drives trips through the same state machine
 })
 export class OrdersModule {}

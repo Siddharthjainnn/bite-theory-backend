@@ -91,4 +91,8 @@ export class UpdateSettingsDto {
 
   @IsOptional() @IsString()
   walletNote?: string;
+
+  /* Delivery rules (merged over defaults; see dispatch.algo.ts). */
+  @IsOptional() @IsObject()
+  dispatchConfig?: Record<string, unknown>;
 }

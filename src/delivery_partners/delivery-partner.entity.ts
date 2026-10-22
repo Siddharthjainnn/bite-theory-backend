@@ -37,4 +37,12 @@ export class DeliveryPartner {
 
   @Column({ type: 'timestamptz', name: 'location_updated_at', nullable: true })
   locationUpdatedAt: Date;
+
+  /* Shift: only online riders are offered trips. Defaults online (migration). */
+  @Column({ type: 'varchar', name: 'shift_status', length: 10, default: 'online' })
+  shiftStatus: string;
+
+  /* Bags this rider can carry on one trip. */
+  @Column({ type: 'integer', default: 2 })
+  capacity: number;
 }

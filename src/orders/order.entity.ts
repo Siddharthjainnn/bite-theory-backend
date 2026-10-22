@@ -58,4 +58,15 @@ export class Order {
   @Column({ name: 'external_rider_phone', type: 'varchar', length: 20, nullable: true }) externalRiderPhone!: string | null;
   @Column({ name: 'external_fee', type: 'numeric', precision: 10, scale: 2, nullable: true }) externalFee!: number | null;
   @Column({ name: 'external_booked_at', type: 'timestamptz', nullable: true }) externalBookedAt!: Date | null;
+
+  /* Delivery system (migrations/2026-10-24-delivery-trips-eta.sql).
+     promised_at = the high end of the range shown at checkout: what we promise. */
+  @Column({ name: 'promised_at', type: 'timestamptz', nullable: true }) promisedAt!: Date | null;
+  @Column({ name: 'promised_min', type: 'integer', nullable: true }) promisedMin!: number | null;
+  @Column({ name: 'promised_max', type: 'integer', nullable: true }) promisedMax!: number | null;
+  @Column({ name: 'ready_at', type: 'timestamptz', nullable: true }) readyAt!: Date | null;
+  @Column({ name: 'trip_id', type: 'bigint', nullable: true }) tripId!: number | null;
+  @Column({ name: 'delay_notified_at', type: 'timestamptz', nullable: true }) delayNotifiedAt!: Date | null;
+  @Column({ name: 'late_makegood_at', type: 'timestamptz', nullable: true }) lateMakegoodAt!: Date | null;
+  @Column({ name: 'prep_estimate_min', type: 'integer', nullable: true }) prepEstimateMin!: number | null;
 }

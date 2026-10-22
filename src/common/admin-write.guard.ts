@@ -77,6 +77,8 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/orders\/[^/]+\/collect\/qr$/ },          // doorstep UPI QR
     { method: 'POST', path: /^\/orders\/[^/]+\/collect\/cancel$/ },      // cancel that QR
     { method: 'PATCH', path: /^\/delivery-partners\/[^/]+\/location$/ },  // GPS ping
+    { method: 'PATCH', path: /^\/delivery\/riders\/me\/shift$/ },        // go online / offline
+    { method: 'PATCH', path: /^\/delivery\/trips\/[^/]+\/pickup$/ },      // picked up every bag on the trip
   ];
 
   canActivate(context: ExecutionContext): boolean {
