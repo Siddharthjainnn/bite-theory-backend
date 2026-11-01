@@ -31,6 +31,10 @@ export class CheckoutDto {
   @IsOptional() @IsIn(['cod', 'online']) paymentMethod?: string;
   @IsOptional() @IsString() deliverySlot?: string;
 
+  /* takeaway: collect at an outlet instead of delivery */
+  @IsOptional() @IsIn(['delivery', 'pickup']) fulfillment?: 'delivery' | 'pickup';
+  @IsOptional() @IsNumber() pickupOutletId?: number;
+
   // UX extras
   @IsOptional() @IsNumber() @Min(0) @Max(500) tipAmount?: number;
   @IsOptional() @IsString() @MaxLength(300) deliveryInstructions?: string;
@@ -56,6 +60,8 @@ export class CreatePaymentDto {
   @IsOptional() @IsNumber() addressId?: number;
   @IsOptional() @IsString() couponCode?: string;
   @IsOptional() @IsBoolean() useWallet?: boolean;
+  @IsOptional() @IsIn(['delivery', 'pickup']) fulfillment?: 'delivery' | 'pickup';
+  @IsOptional() @IsNumber() pickupOutletId?: number;
 
   // Full destination + extras are snapshotted so the webhook can finish
   // checkout even if the browser dies right after payment.

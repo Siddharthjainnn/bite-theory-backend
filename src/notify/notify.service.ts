@@ -63,12 +63,14 @@ export class NotifyService {
     const [o] = await this.ds.query(
       `SELECT o.id, o.order_number, o.total, o.status, o.user_id, o.promised_at, o.promised_min, o.promised_max,
               o.delivery_address, o.delivery_provider, o.external_tracking_url, o.delivery_partner_id,
+              o.fulfillment, o.delivery_otp, po.name AS pickup_outlet,
               u.first_name, u.mobile, COALESCE(u.whatsapp_opt_out, false) AS opt_out,
               dp.name AS rider_name,
               (SELECT COUNT(*) FROM order_items i WHERE i.order_id = o.id)::int AS items
          FROM orders o
          LEFT JOIN users u ON u.id = o.user_id
          LEFT JOIN delivery_partners dp ON dp.id = o.delivery_partner_id
+         LEFT JOIN outlets po ON po.id = o.pickup_outlet_id
         WHERE o.id = $1`,
       [orderId],
     );
@@ -128,8 +130,10 @@ export class NotifyService {
       const o = await this.order(orderId);
       if (!o) return;
       if (cfg.customerEnabled) {
-        const eta =
-          o.promised_min && o.promised_max
+        const pickup = o.fulfillment === 'pickup';
+        const eta = pickup
+          ? `takeaway, ready for pickup at ${o.pickup_outlet || 'the outlet'}${o.promised_at ? ` around ${clock(new Date(o.promised_at), tz)}` : ''}. Pickup code ${o.delivery_otp}`
+          : o.promised_min && o.promised_max
             ? `${o.promised_min}-${o.promised_max} min (by ${clock(new Date(o.promised_at), tz)})`
             : 'about 30-45 min';
         await this.toCustomer(
@@ -156,7 +160,9 @@ export class NotifyService {
           alertLine('new_order', {
             total: Number(o.total),
             items: o.items,
-            area: localityHint(o.delivery_address),
+            area: o.fulfillment === 'pickup'
+              ? `TAKEAWAY at ${o.pickup_outlet || 'outlet'}`
+              : localityHint(o.delivery_address),
           }),
           `alert:new_order:${o.id}`,
         );
@@ -177,6 +183,8 @@ export class NotifyService {
         porter: o.delivery_provider && o.delivery_provider !== 'in_house',
         porterLink: o.external_tracking_url,
         cooking: cfg.customerCooking,
+        pickupAt: o.fulfillment === 'pickup' ? (o.pickup_outlet || 'the outlet') : null,
+        pickupCode: o.fulfillment === 'pickup' ? o.delivery_otp : null,
       });
       if (!line) return;
       await this.toCustomer(
@@ -279,6 +287,7 @@ export class NotifyService {
       const rows = await this.ds.query(
         `SELECT id, order_number, EXTRACT(EPOCH FROM (now() - ready_at)) / 60 AS mins
            FROM orders WHERE status = 'food_ready' AND ready_at IS NOT NULL
+            AND COALESCE(fulfillment, 'delivery') = 'delivery'
             AND delivery_partner_id IS NULL AND COALESCE(delivery_provider, 'in_house') = 'in_house'
             AND ready_at < now() - make_interval(mins => $1::int)
             AND ready_at > now() - interval '6 hours'`,

@@ -42,3 +42,17 @@ describe('order status machine (P0-1 regression)', () => {
     expect(TRANSITIONS.cancelled).toEqual([]);
   });
 });
+
+describe('takeaway (pickup) orders', () => {
+  it('Ready -> Picked up is allowed for pickup only', () => {
+    expect(() => assertTransition('food_ready', 'delivered', 'pickup')).not.toThrow();
+    expect(() => assertTransition('food_ready', 'delivered', 'delivery')).toThrow();
+    expect(() => assertTransition('food_ready', 'delivered')).toThrow();
+  });
+  it('a pickup order can never be given to a rider', () => {
+    expect(() => assertTransition('food_ready', 'assigned_to_delivery', 'pickup')).toThrow();
+  });
+  it('still cannot be revived once picked up', () => {
+    expect(() => assertTransition('delivered', 'cancelled', 'pickup')).toThrow(/final state/i);
+  });
+});

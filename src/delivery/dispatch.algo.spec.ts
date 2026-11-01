@@ -474,3 +474,14 @@ describe('same area, same direction', () => {
     expect(DEFAULT_DISPATCH.batchMaxBearingDeg).toBe(45);
   });
 });
+
+describe('quoteEta for takeaway', () => {
+  it('a pickup promise has no ride and no rider handoff', () => {
+    const cfg = normalizeDispatch({});
+    const base = { prepMin: 15, ordersCooking: 0, stats: {}, cfg };
+    const deliver = quoteEta({ ...base, distanceKm: 4 });
+    const pickup = quoteEta({ ...base, distanceKm: 4, pickup: true });
+    expect(pickup.maxMin).toBeLessThan(deliver.maxMin);
+    expect(pickup.minMin).toBeLessThanOrEqual(deliver.minMin);
+  });
+});

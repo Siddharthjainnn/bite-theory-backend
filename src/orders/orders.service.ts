@@ -73,6 +73,16 @@ export class OrdersService {
         (r as any).zone = OrdersService.zoneForPincode(
           OrdersService.pincodeFromAddress((r as any).deliveryAddress));
       });
+      /* takeaway orders: which outlet the customer collects from */
+      const pickupIds = [...new Set(rows.map((r) => r.pickupOutletId).filter((x) => x != null))];
+      if (pickupIds.length) {
+        const outs = await this.dataSource.query(
+          `SELECT id, name FROM outlets WHERE id = ANY($1)`, [pickupIds]);
+        const oby = new Map<number, string>(outs.map((x: any) => [Number(x.id), x.name]));
+        rows.forEach((r) => {
+          if (r.pickupOutletId != null) (r as any).pickupOutletName = oby.get(Number(r.pickupOutletId)) ?? null;
+        });
+      }
     }
 
     /* riders must never see the handoff OTP — only the customer gets it (§4.5) */
@@ -157,6 +167,9 @@ export class OrdersService {
     const order = await this.findOne(orderId);
     if (['delivered', 'cancelled'].includes(order.status)) {
       throw new BadRequestException(`Order is already ${order.status}.`);
+    }
+    if (order.fulfillment === 'pickup') {
+      throw new BadRequestException('This is a takeaway order: the customer collects it, no rider needed.');
     }
 
     const rider = await this.dataSource.query(
@@ -262,6 +275,8 @@ export class OrdersService {
    * a retried "delivered" can never pay twice.
    */
   private async lateMakegood(order: Order) {
+    /* a takeaway is "late" only if the customer came late — never credit it */
+    if (order.fulfillment === 'pickup') return;
     if (!order.userId || !order.deliveredAt || !order.promisedAt) return;
     const cfg = normalizeDispatch((await this.settings.get()).dispatchConfig);
     const amount = makegoodFor(new Date(order.deliveredAt).getTime(), new Date(order.promisedAt).getTime(), cfg);
@@ -359,6 +374,9 @@ export class OrdersService {
    */
   async bookExternalCourier(orderId: number, dto: BookExternalCourierDto) {
     const order = await this.findOne(orderId);
+    if (order.fulfillment === 'pickup') {
+      throw new BadRequestException('This is a takeaway order: the customer collects it, no courier needed.');
+    }
     const alreadyBooked = isExternal(order.deliveryProvider);
 
     /* Updating driver details on an order Porter is already carrying is
@@ -546,8 +564,16 @@ export class OrdersService {
     const customerName = cust[0]
       ? `${cust[0].first_name || ''} ${cust[0].last_name || ''}`.trim() || null
       : null;
+    const [po] = (order as any).pickupOutletId
+      ? await this.dataSource.query(
+          `SELECT id, name, address, phone, maps_url AS "mapsUrl", pickup_note AS "note",
+                  latitude::float AS lat, longitude::float AS lng
+             FROM outlets WHERE id = $1`, [(order as any).pickupOutletId])
+      : [];
     return {
       ...order, items, history,
+      pickupOutlet: po || null,
+      pickupOutletName: po?.name ?? null,
       customerName,
       customerMobile: cust[0]?.mobile ?? null,
       zone: OrdersService.zoneForPincode(
@@ -605,7 +631,7 @@ export class OrdersService {
        the rider is still heading to (or waiting at) the kitchen, so the ETA has
        to include: reach-restaurant + remaining-prep + restaurant→home. Only
        after pickup do we count down the short rider→home leg. */
-    let etaMinutes = full.etaMinutes ?? null;
+    let etaMinutes: number | null = full.etaMinutes ?? null;
     const destLat = full.deliveryLat != null ? Number(full.deliveryLat) : null;
     const destLng = full.deliveryLng != null ? Number(full.deliveryLng) : null;
     const kmph = Number(cfg.avgRiderKmph) || 20;
@@ -688,14 +714,32 @@ export class OrdersService {
         }
       } catch { /* trips not migrated yet: keep the direct ETA */ }
     }
+    /* takeaway: no rider leg — minutes until the food is ready, and the map
+       shows the outlet the customer is heading to */
+    let pickupStore: { lat: number; lng: number; address: string | null } | null = null;
+    if ((full as any).fulfillment === 'pickup') {
+      const po = (full as any).pickupOutlet;
+      if (po?.lat != null && po?.lng != null) pickupStore = { lat: Number(po.lat), lng: Number(po.lng), address: po.address || null };
+      if (terminal || full.status === 'food_ready') etaMinutes = terminal ? null : 0;
+      else if ((full as any).promisedAt) {
+        /* count down to the ready-by time promised at checkout (a timestamptz,
+           so no timezone guesswork); never show 0 while it's still cooking */
+        etaMinutes = Math.max(1, Math.round((new Date((full as any).promisedAt).getTime() - Date.now()) / 60000));
+      } else {
+        etaMinutes = Number((full as any).prepEstimateMin) || prepMin;
+      }
+    }
     const promisedAt = (full as any).promisedAt ? new Date((full as any).promisedAt).getTime() : null;
-    const runningLate = !terminal && promisedAt != null && etaMinutes != null
-      && Date.now() + etaMinutes * 60000 > promisedAt;
+    const runningLate = (full as any).fulfillment === 'pickup'
+      /* takeaway counts down to the promise itself: late only once it has passed */
+      ? !terminal && full.status !== 'food_ready' && promisedAt != null && Date.now() > promisedAt
+      : !terminal && promisedAt != null && etaMinutes != null
+        && Date.now() + etaMinutes * 60000 > promisedAt;
 
     /* Strip our cost and internal ref from the customer payload; expose only
        what the customer needs to find their food. */
     const { externalFee: _fee, externalRef: _ref, ...publicFull } = full as any;
-    return { ...publicFull, etaMinutes, partner, store, courier: publicCourier(full as any), stopsBefore, runningLate };
+    return { ...publicFull, etaMinutes, partner, store: pickupStore ?? store, courier: publicCourier(full as any), stopsBefore, runningLate };
   }
 
   /**
@@ -726,6 +770,8 @@ export class OrdersService {
       addressId: dto.addressId,
       deliveryLat: dto.deliveryLat ?? null,
       deliveryLng: dto.deliveryLng ?? null,
+      fulfillment: dto.fulfillment,
+      pickupOutletId: dto.pickupOutletId,
     });
 
     if (priced.payable < 1) {
@@ -766,7 +812,10 @@ export class OrdersService {
     thaliItems?: { templateId: number; selections: { optionId: number; qty: number }[] }[];
     couponCode?: string; useWallet?: boolean; tipAmount?: number;
     addressId?: number; deliveryLat?: number | null; deliveryLng?: number | null;
+    fulfillment?: 'delivery' | 'pickup'; pickupOutletId?: number;
   }) {
+    const pickup = input.fulfillment === 'pickup';
+    if (pickup) await this.pickupOutlet(this.dataSource, input.pickupOutletId);
     const ids = (input.items || []).map((i) => i.productId);
     const products = await this.dataSource.query(
       `SELECT id, name, price, offer_price FROM products
@@ -837,6 +886,19 @@ export class OrdersService {
       throw new BadRequestException(
         `Maximum order value is ₹${cfg.maxOrderAmount}. Please split into two orders.`);
     }
+    /* takeaway: no destination, no delivery fee, no rider tip */
+    if (pickup) {
+      let payable = subtotal - discount;
+      let walletUsed = 0;
+      if (input.useWallet) {
+        const u = await this.dataSource.query(
+          `SELECT wallet_balance FROM users WHERE id = $1`, [input.userId]);
+        walletUsed = Math.min(Number(u[0]?.wallet_balance || 0), payable);
+        payable -= walletUsed;
+      }
+      return { subtotal, discount, deliveryCharge: 0, tip: 0, walletUsed, payable, distanceKm: null, etaMinutes: null };
+    }
+
     /* destination coords: explicit > saved address */
     let dLat = input.deliveryLat ?? null;
     let dLng = input.deliveryLng ?? null;
@@ -1054,9 +1116,15 @@ export class OrdersService {
       : 0;
 
     /* Filled inside the transaction, used after it commits (see below). */
-    let promiseFor: { orderId: number; lines: { productId: number | null; quantity: number }[]; distanceKm: number | null } | null = null;
+    let promiseFor: { orderId: number; lines: { productId: number | null; quantity: number }[]; distanceKm: number | null; pickup?: boolean } | null = null;
+
+    const pickup = dto.fulfillment === 'pickup';
 
     const result = await this.dataSource.transaction(async (mgr) => {
+      /* takeaway: the outlet must be open for pickups (checked again here
+         because the webhook path finishes orders without the browser) */
+      const outlet = pickup ? await this.pickupOutlet(mgr, dto.pickupOutletId) : null;
+
       /* 0) idempotency — if this payment already produced an order (browser
          handler AND webhook can both land here), return the existing order
          instead of double-charging inventory/wallet/coupons. */
@@ -1161,8 +1229,8 @@ export class OrdersService {
         throw new BadRequestException(`Minimum order is ₹${cfg.minOrderAmount}.`);
       if (cfg.maxOrderAmount > 0 && subtotal > cfg.maxOrderAmount)
         throw new BadRequestException(`Maximum order value is ₹${cfg.maxOrderAmount}.`);
-      let deliveryCharge = subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
-      const tip = Math.max(0, Math.min(Number(dto.tipAmount) || 0, 500));
+      let deliveryCharge = pickup || subtotal - discount >= cfg.freeDeliveryAbove ? 0 : cfg.deliveryCharge;
+      const tip = pickup ? 0 : Math.max(0, Math.min(Number(dto.tipAmount) || 0, 500));
       let payable = subtotal - discount + deliveryCharge + tip;
 
       /* 4) wallet (lock the user row) */
@@ -1186,11 +1254,11 @@ export class OrdersService {
          that doesn't yet include the distance-based delivery charge, which
          wrongly rejected valid paid orders. */
 
-      /* 5) resolve delivery destination */
-      let deliveryAddress = dto.deliveryAddress || null;
-      let deliveryLat = dto.deliveryLat ?? null;
-      let deliveryLng = dto.deliveryLng ?? null;
-      if (dto.addressId) {
+      /* 5) resolve delivery destination (takeaway: none — the outlet) */
+      let deliveryAddress = pickup ? `Takeaway — ${outlet!.name}` : (dto.deliveryAddress || null);
+      let deliveryLat = pickup ? null : (dto.deliveryLat ?? null);
+      let deliveryLng = pickup ? null : (dto.deliveryLng ?? null);
+      if (dto.addressId && !pickup) {
         const a = await mgr.query(
           `SELECT full_address, landmark, city, pincode, latitude, longitude
              FROM addresses WHERE id = $1 AND user_id = $2`, [dto.addressId, dto.userId]);
@@ -1201,19 +1269,21 @@ export class OrdersService {
         deliveryLat = deliveryLat ?? (ad.latitude != null ? Number(ad.latitude) : null);
         deliveryLng = deliveryLng ?? (ad.longitude != null ? Number(ad.longitude) : null);
       }
-      if (!dto.addressId && !deliveryAddress) throw new BadRequestException('Delivery address required');
+      if (!pickup && !dto.addressId && !deliveryAddress) throw new BadRequestException('Delivery address required');
 
       /* C3: if we enforce a delivery zone but this address has no coordinates,
          we can't verify it's deliverable — refuse rather than let the customer
          pay for a place we may not serve. (deliveryPricing silently skips the
          radius check when lat/lng are null, which is the loophole this closes.) */
-      if ((Number(cfg.deliveryRadiusKm) || 0) > 0 && (deliveryLat == null || deliveryLng == null)) {
+      if (!pickup && (Number(cfg.deliveryRadiusKm) || 0) > 0 && (deliveryLat == null || deliveryLng == null)) {
         throw new BadRequestException(
           'We couldn\'t pin your delivery location. Please edit the address and drop a pin on the map.');
       }
 
       /* 5b) distance: SAME formula as priceCart (radius reject, tiered charge, ETA) */
-      const dp = this.deliveryPricing(cfg, subtotal - discount, deliveryLat, deliveryLng);
+      const dp = pickup
+        ? { deliveryCharge: 0, distanceKm: null as number | null, etaMinutes: Number(cfg.avgPrepMinutes) || 20 }
+        : this.deliveryPricing(cfg, subtotal - discount, deliveryLat, deliveryLng);
       const distanceKm = dp.distanceKm;
       const etaMinutes = dp.etaMinutes;
       if (dp.deliveryCharge !== deliveryCharge) {
@@ -1252,15 +1322,16 @@ export class OrdersService {
         `INSERT INTO orders (order_number, user_id, address_id, coupon_id, subtotal, discount,
              delivery_charge, tax, tax_rate, cgst, sgst, invoice_no, wallet_used, total, status, delivery_slot,
              delivery_lat, delivery_lng, delivery_address, eta_minutes, distance_km,
-             tip, delivery_instructions, cooking_note, delivery_otp)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$20,$21,$22,$23,$24,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+             tip, delivery_instructions, cooking_note, delivery_otp, fulfillment, pickup_outlet_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$20,$21,$22,$23,$24,$8,$9,'order_received',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$25,$26)
          RETURNING *, order_number AS "orderNumber", user_id AS "userId", placed_at AS "placedAt"`,
-        [orderNumber, dto.userId, dto.addressId ?? null, couponId, subtotal, discount,
+        [orderNumber, dto.userId, pickup ? null : (dto.addressId ?? null), couponId, subtotal, discount,
          deliveryCharge, walletUsed, total, dto.deliverySlot ?? null,
          deliveryLat, deliveryLng, deliveryAddress, etaMinutes, distanceKm,
-         tip, dto.deliveryInstructions?.trim() || null, dto.cookingNote?.trim() || null,
+         tip, pickup ? null : (dto.deliveryInstructions?.trim() || null), dto.cookingNote?.trim() || null,
          deliveryOtp,
-         gst.tax, gst.taxRate, gst.cgst, gst.sgst, invoiceNo]);
+         gst.tax, gst.taxRate, gst.cgst, gst.sgst, invoiceNo,
+         pickup ? 'pickup' : 'delivery', outlet?.id ?? null]);
       const orderId = Number(order.id);
 
       /* 7) items */
@@ -1402,7 +1473,9 @@ export class OrdersService {
         `INSERT INTO notifications (user_id, order_id, channel, title, body, is_sent)
          VALUES ($1,$2,'in_app','🛎️ Order placed!',$3,true)`,
         [dto.userId, orderId,
-         `Order ${orderNumber} is confirmed — ₹${total} · we'll start cooking right away.`]);
+         pickup
+           ? `Order ${orderNumber} is confirmed — ₹${total}. Takeaway from ${outlet!.name}: we'll tell you when it's ready. Your pickup code is ${deliveryOtp}.`
+           : `Order ${orderNumber} is confirmed — ₹${total} · we'll start cooking right away.`]);
 
       /* 15) loyalty: 1 point per ₹100 of subtotal, then auto-upgrade tier */
       const points = Math.floor(subtotal / 100);
@@ -1446,7 +1519,8 @@ export class OrdersService {
           ...lines.map((l: any) => ({ productId: Number(l.productId), quantity: Number(l.quantity) })),
           ...thaliLines.map(() => ({ productId: null, quantity: 1 })),
         ],
-        distanceKm,
+        distanceKm: pickup ? 0 : distanceKm,
+        pickup,
       };
       return { ...order, id: orderId, items: lines, pointsEarned: points };
     });
@@ -1460,10 +1534,31 @@ export class OrdersService {
     return promise ? { ...result, ...promise } : result;
   }
 
+  /**
+   * Takeaway outlet check — active, takeaway switched on, and open for
+   * takeaway today (Bhawarkua lists itself before opening day but can't be
+   * ordered from until then). Dates are India dates.
+   */
+  private async pickupOutlet(q: { query: (sql: string, p?: unknown[]) => Promise<any> }, id?: number | null) {
+    if (!id) throw new BadRequestException('Choose the outlet you will collect from.');
+    const [o] = await q.query(
+      `SELECT id, name, is_active, pickup_enabled, pickup_opens_on::text AS opens_on,
+              (now() AT TIME ZONE 'Asia/Kolkata')::date::text AS today
+         FROM outlets WHERE id = $1`, [id]);
+    if (!o || !o.is_active || !o.pickup_enabled) {
+      throw new BadRequestException('Takeaway is not available at that outlet right now. Please choose another.');
+    }
+    if (o.opens_on && o.opens_on > o.today) {
+      const d = new Date(o.opens_on + 'T12:00:00Z').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+      throw new BadRequestException(`${o.name} opens for takeaway on ${d}. Please choose another outlet or delivery.`);
+    }
+    return { id: Number(o.id), name: String(o.name) };
+  }
+
   /** Quote the range for a just-placed order and save the high end as the promise. */
-  private async stampPromise(p: { orderId: number; lines: { productId: number | null; quantity: number }[]; distanceKm: number | null }) {
+  private async stampPromise(p: { orderId: number; lines: { productId: number | null; quantity: number }[]; distanceKm: number | null; pickup?: boolean }) {
     try {
-      const q = await this.eta.quote({ lines: p.lines, distanceKm: p.distanceKm, exceptOrderId: p.orderId });
+      const q = await this.eta.quote({ lines: p.lines, distanceKm: p.distanceKm, exceptOrderId: p.orderId, pickup: p.pickup });
       const [row] = returned(await this.dataSource.query(
         `UPDATE orders
             SET promised_min = $2, promised_max = $3, prep_estimate_min = $4, eta_minutes = $3,
@@ -1943,7 +2038,7 @@ export class OrdersService {
        terminal, so no caller can walk a delivered order back to `cancelled`
        and trigger refundOnCancel() after the food is gone. Post-delivery
        money movement is an explicit, audited admin action: adminRefund(). */
-    assertTransition(order.status, dto.status);
+    assertTransition(order.status, dto.status, order.fulfillment || 'delivery');
 
     /* ── P0-1: authorize non-admin status changes ─────────────────────────
        The rider's identity now comes from a SIGNED TOKEN (req.riderId), never
@@ -2151,6 +2246,18 @@ export class OrdersService {
       cancelled:            { title: '❌ Order cancelled', body: 'Your order was cancelled. Any payment will be refunded.' },
     };
     let m = MSG[dto.status];
+    /* takeaway: "ready" is the moment that matters — where, and the code */
+    if (m && saved.fulfillment === 'pickup') {
+      const [po] = saved.pickupOutletId
+        ? await this.dataSource.query(`SELECT name FROM outlets WHERE id = $1`, [saved.pickupOutletId])
+        : [];
+      const where = po?.name || 'the outlet';
+      const PICKUP_MSG: Record<string, { title: string; body: string }> = {
+        food_ready: { title: '🛍️ Ready for pickup', body: `Collect it at ${where}. Your pickup code is ${saved.deliveryOtp || '—'}.` },
+        delivered:  { title: '🎉 Picked up — enjoy!', body: 'Hope it was delicious. Rate your order?' },
+      };
+      m = PICKUP_MSG[dto.status] || m;
+    }
     /* Porter order heading out: the customer's best tracker is Porter's own
        live link, not our map (there is no house rider GPS to show). */
     if (m && dto.status === 'out_for_delivery' && isExternal(saved.deliveryProvider)) {

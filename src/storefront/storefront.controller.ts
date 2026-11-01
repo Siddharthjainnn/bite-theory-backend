@@ -18,6 +18,7 @@ import { StorefrontService } from './storefront.service';
  *   POST launch/notify             PUBLIC: "Notify me on opening day" (5/min per IP, unique by phone)
  *   GET  launch/subscribers        admin: count + latest (phones masked)
  *   GET  launch/subscribers.csv    admin: full list for export
+ *   GET  outlets                   PUBLIC: takeaway outlets for checkout
  * The banner text, opening time, price comparison and app tiles are
  * store settings (storefrontConfig) — read with GET /settings, saved with PATCH /settings.
  */
@@ -32,6 +33,11 @@ export class StorefrontController {
     @Req() req: Request,
   ) {
     return this.service.subscribe(body, authUidFromReq(req));
+  }
+
+  @Get('outlets')
+  outlets() {
+    return this.service.outlets();
   }
 
   @UseGuards(AdminAuthGuard)

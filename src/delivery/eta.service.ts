@@ -126,6 +126,7 @@ export class EtaService {
     distanceKm: number | null;
     at?: Date;
     exceptOrderId?: number;
+    pickup?: boolean;
   }): Promise<EtaQuote & { prepMin: number }> {
     const at = input.at ?? new Date();
     const { cfg, settings } = await this.config();
@@ -141,6 +142,7 @@ export class EtaService {
         distanceKm: input.distanceKm,
         stats,
         cfg,
+        pickup: input.pickup,
       }),
       prepMin,
     };
@@ -180,6 +182,7 @@ export class EtaService {
               (SELECT COUNT(*) FROM trip_stops s WHERE s.trip_id = o.trip_id)::int AS stops
          FROM orders o
         WHERE o.status = 'delivered' AND o.delivered_at > now() - interval '30 days'
+          AND COALESCE(o.fulfillment, 'delivery') = 'delivery'
         ORDER BY o.delivered_at DESC LIMIT 20000`,
     );
 

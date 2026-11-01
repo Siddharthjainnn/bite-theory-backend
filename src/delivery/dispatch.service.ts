@@ -111,6 +111,7 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
     const waiting = await this.ds.query(
       `SELECT id FROM orders
         WHERE status IN ('order_confirmed','preparing_food','food_ready')
+          AND COALESCE(fulfillment, 'delivery') = 'delivery'
           AND COALESCE(delivery_provider, 'in_house') = 'in_house'
           AND delivery_partner_id IS NULL AND trip_id IS NULL
         ORDER BY placed_at`,
@@ -388,6 +389,7 @@ export class DispatchService implements OnModuleInit, OnModuleDestroy {
     const rows = await this.ds.query(
       `SELECT id, user_id, order_number, promised_at FROM orders
         WHERE status IN ('order_confirmed','preparing_food','food_ready','assigned_to_delivery','out_for_delivery','arriving_soon')
+          AND COALESCE(fulfillment, 'delivery') = 'delivery'
           AND promised_at IS NOT NULL AND delay_notified_at IS NULL
         ORDER BY promised_at LIMIT 100`,
     );

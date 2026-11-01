@@ -23,7 +23,10 @@ const SITE_PRICE_SQL = `CASE WHEN p.offer_price > 0 AND p.offer_price < p.price
 const OUTLET_COLS = `id, code, name, address, phone, gstin, fssai,
   bill_footer AS "billFooter", day_starts_at AS "dayStartsAt",
   print_mode AS "printMode", kot_copies AS "kotCopies",
-  is_active AS "isActive", sort_order AS "sortOrder"`;
+  is_active AS "isActive", sort_order AS "sortOrder",
+  pickup_enabled AS "pickupEnabled", pickup_opens_on::text AS "pickupOpensOn",
+  cooks_delivery AS "cooksDelivery", latitude::float AS "latitude", longitude::float AS "longitude",
+  maps_url AS "mapsUrl", pickup_note AS "pickupNote"`;
 
 const MAX_REPORT_DAYS = 366;
 
@@ -79,7 +82,17 @@ export class PosService {
       kot_copies: dto.kotCopies,
       is_active: dto.isActive,
       sort_order: dto.sortOrder,
+      pickup_enabled: dto.pickupEnabled,
+      pickup_opens_on: dto.pickupOpensOn === undefined ? undefined : (dto.pickupOpensOn || null),
+      cooks_delivery: dto.cooksDelivery,
+      latitude: dto.latitude === undefined ? undefined : dto.latitude,
+      longitude: dto.longitude === undefined ? undefined : dto.longitude,
+      maps_url: dto.mapsUrl === undefined ? undefined : (dto.mapsUrl.trim() || null),
+      pickup_note: dto.pickupNote?.trim(),
     };
+    if (fields.maps_url && !/^https:\/\//i.test(String(fields.maps_url))) {
+      throw new BadRequestException('The Google Maps link must start with https://');
+    }
     if (fields.gstin && !/^[0-9A-Z]{15}$/.test(String(fields.gstin))) {
       throw new BadRequestException('GSTIN must be 15 letters/digits.');
     }

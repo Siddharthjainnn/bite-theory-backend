@@ -95,6 +95,30 @@ export class OutletDto {
 
   @IsOptional() @IsInt()
   sortOrder?: number;
+
+  /* online takeaway */
+  @IsOptional() @IsBoolean()
+  pickupEnabled?: boolean;
+
+  /** YYYY-MM-DD; empty = open for takeaway now */
+  @IsOptional() @IsString() @Matches(/^(\d{4}-\d{2}-\d{2})?$/, { message: 'Takeaway start date must be a date' })
+  pickupOpensOn?: string;
+
+  /** this kitchen cooks the delivery orders */
+  @IsOptional() @IsBoolean()
+  cooksDelivery?: boolean;
+
+  @IsOptional() @IsNumber() @Min(-90) @Max(90)
+  latitude?: number | null;
+
+  @IsOptional() @IsNumber() @Min(-180) @Max(180)
+  longitude?: number | null;
+
+  @IsOptional() @IsString() @MaxLength(500)
+  mapsUrl?: string;
+
+  @IsOptional() @IsString() @MaxLength(200)
+  pickupNote?: string;
 }
 
 export class OutletPriceDto {

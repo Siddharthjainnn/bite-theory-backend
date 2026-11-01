@@ -165,8 +165,25 @@ export function statusLine(
     porter?: boolean;
     porterLink?: string | null;
     cooking: boolean;
+    /** takeaway: outlet name + the code the customer shows at the counter */
+    pickupAt?: string | null;
+    pickupCode?: string | null;
   },
 ): string | null {
+  if (ctx.pickupAt) {
+    switch (status) {
+      case 'preparing_food':
+        return ctx.cooking ? 'the kitchen has started cooking it' : null;
+      case 'food_ready':
+        return `it is ready for pickup at ${ctx.pickupAt}${ctx.pickupCode ? `. Show code ${ctx.pickupCode} at the counter` : ''}`;
+      case 'delivered':
+        return 'it has been picked up. Enjoy your meal';
+      case 'cancelled':
+        return 'it has been cancelled. Any payment will be refunded';
+      default:
+        return null;
+    }
+  }
   switch (status) {
     case 'preparing_food':
       return ctx.cooking ? 'the kitchen has started cooking it' : null;

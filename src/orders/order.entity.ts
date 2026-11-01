@@ -69,4 +69,7 @@ export class Order {
   @Column({ name: 'delay_notified_at', type: 'timestamptz', nullable: true }) delayNotifiedAt!: Date | null;
   @Column({ name: 'late_makegood_at', type: 'timestamptz', nullable: true }) lateMakegoodAt!: Date | null;
   @Column({ name: 'prep_estimate_min', type: 'integer', nullable: true }) prepEstimateMin!: number | null;
+  /* takeaway: 'pickup' orders are collected at pickup_outlet_id — no rider */
+  @Column({ name: 'fulfillment', type: 'varchar', length: 10, default: 'delivery' }) fulfillment!: 'delivery' | 'pickup';
+  @Column({ name: 'pickup_outlet_id', type: 'integer', nullable: true }) pickupOutletId!: number | null;
 }

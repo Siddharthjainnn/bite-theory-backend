@@ -202,6 +202,8 @@ export interface EtaInput {
   distanceKm: number | null;
   stats: BandStats; // this hour band's learned stats
   cfg: DispatchConfig;
+  /** takeaway: ready-for-pickup time — no rider handoff, no ride */
+  pickup?: boolean;
 }
 
 export interface EtaQuote {
@@ -232,7 +234,9 @@ export function quoteEta(i: EtaInput): EtaQuote {
   const ratio = trusted(stats.prep_ratio)
     ? stats.prep_ratio!
     : { median: 1, p80: 1.2 };
-  const handoff = trusted(stats.handoff)
+  const handoff = i.pickup
+    ? { median: 0, p80: 0 }
+    : trusted(stats.handoff)
     ? stats.handoff!
     : { median: cfg.defaultHandoffMin, p80: cfg.defaultHandoffMin * 2 };
   /* speed: the SLOW tail is the 20th percentile; we store p80 of minutes-per-km
@@ -244,8 +248,9 @@ export function quoteEta(i: EtaInput): EtaQuote {
         p80: (60 / cfg.defaultSpeedKmph) * 1.25,
       };
 
-  const km =
-    i.distanceKm != null && Number.isFinite(i.distanceKm)
+  const km = i.pickup
+    ? 0
+    : i.distanceKm != null && Number.isFinite(i.distanceKm)
       ? Math.max(0, i.distanceKm)
       : 3;
   const queue = queueMinutes(i.ordersCooking, cfg);

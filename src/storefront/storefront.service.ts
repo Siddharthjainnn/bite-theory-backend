@@ -98,6 +98,28 @@ export class StorefrontService implements OnModuleInit, OnModuleDestroy {
     return { ok: true, phone: mask(to), already: !row?.created };
   }
 
+  /**
+   * Outlets for the customer: where takeaway can be collected, and which
+   * kitchen cooks deliveries. Public — only what a customer may see.
+   * `pickupOpen` is false until an outlet's takeaway start date (India date).
+   */
+  async outlets() {
+    try {
+      const rows = await this.ds.query(
+        `SELECT id, name, address, phone, maps_url AS "mapsUrl", pickup_note AS "note",
+                latitude::float AS lat, longitude::float AS lng,
+                pickup_enabled AS "pickup", cooks_delivery AS "cooksDelivery",
+                pickup_opens_on::text AS "opensOn",
+                (pickup_enabled AND (pickup_opens_on IS NULL
+                   OR pickup_opens_on <= (now() AT TIME ZONE 'Asia/Kolkata')::date)) AS "pickupOpen"
+           FROM outlets WHERE is_active
+          ORDER BY sort_order, id`);
+      return rows;
+    } catch {
+      return []; // before the takeaway migration: no outlets to offer
+    }
+  }
+
   async stats() {
     const [c] = await this.ds.query(
       `SELECT COUNT(*)::int AS total,

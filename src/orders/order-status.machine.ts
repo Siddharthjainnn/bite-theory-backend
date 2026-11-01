@@ -33,8 +33,19 @@ export const RIDER_ALLOWED_STATUSES = [
   'delivered',
 ];
 
-export function assertTransition(from: string, to: string): void {
-  const allowed = TRANSITIONS[from];
+/**
+ * Takeaway orders never meet a rider: Ready → Picked up (recorded as
+ * delivered, so reports, COD settlement and reviews work unchanged).
+ */
+export const PICKUP_TRANSITIONS: Record<string, string[]> = {
+  ...TRANSITIONS,
+  food_ready: ['delivered', 'cancelled'],
+  assigned_to_delivery: ['delivered', 'cancelled'],
+  out_for_delivery: ['delivered'],
+};
+
+export function assertTransition(from: string, to: string, fulfillment: string = 'delivery'): void {
+  const allowed = (fulfillment === 'pickup' ? PICKUP_TRANSITIONS : TRANSITIONS)[from];
   if (!allowed) {
     throw new BadRequestException(`Unknown order status "${from}".`);
   }

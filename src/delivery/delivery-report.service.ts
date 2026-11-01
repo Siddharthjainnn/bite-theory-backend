@@ -30,6 +30,7 @@ export class DeliveryReportService {
       throw new BadRequestException('Dates must be YYYY-MM-DD.');
 
     const WHERE = `o.status = 'delivered' AND o.delivered_at IS NOT NULL
+      AND COALESCE(o.fulfillment, 'delivery') = 'delivery'
       AND (o.delivered_at AT TIME ZONE $3)::date BETWEEN $1::date AND $2::date`;
     const MINS = (a: string, b: string) =>
       `EXTRACT(EPOCH FROM (${b} - ${a})) / 60`;

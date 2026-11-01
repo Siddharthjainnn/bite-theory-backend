@@ -154,3 +154,16 @@ describe('area hint for kitchen alerts', () => {
     expect(NotifyService.localityHint(addr)).toBe(area),
   );
 });
+
+describe('statusLine for takeaway', () => {
+  const ctx = { cooking: true, pickupAt: 'Bhawarkua', pickupCode: '4821' };
+  it('tells the customer where and the code when ready', () => {
+    expect(statusLine('food_ready', ctx)).toBe('it is ready for pickup at Bhawarkua. Show code 4821 at the counter');
+  });
+  it('says picked up, not delivered', () => {
+    expect(statusLine('delivered', ctx)).toMatch(/picked up/);
+  });
+  it('a delivery order still gets no "ready" message', () => {
+    expect(statusLine('food_ready', { cooking: true })).toBeNull();
+  });
+});
