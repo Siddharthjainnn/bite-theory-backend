@@ -158,6 +158,10 @@ INSERT INTO _bt_menu (name, cat, zomato, pos) VALUES
   ('Fresh Boondi Raita (400 ml)', 'sides-desserts', 68, 1),
   ('Gulab Jamun',               'sides-desserts',   30, 2);
 
+-- the URL name each new dish would get ("Sev Tamatar + 4 Roti" -> "sev-tamatar-4-roti")
+ALTER TABLE _bt_menu ADD COLUMN slug text;
+UPDATE _bt_menu SET slug = trim(both '-' from regexp_replace(lower(name), '[^a-z0-9]+', '-', 'g'));
+
 -- existing dish with the same name: update it in place (photo, description, nutrition kept)
 UPDATE products p
    SET category_id  = k.id,
@@ -171,13 +175,30 @@ UPDATE products p
   FROM _bt_menu m JOIN _bt_cats k ON k.slug = m.cat
  WHERE lower(trim(p.name)) = lower(m.name);
 
+-- existing dish written slightly differently but with the same URL name
+-- (e.g. "Sev Tamatar + (4 Roti)"): it is the same dish, so take the new name
+-- and update it in place, instead of adding a duplicate (slugs are unique)
+UPDATE products p
+   SET name         = m.name,
+       category_id  = k.id,
+       price        = round(m.zomato * 0.7),
+       offer_price  = NULL,
+       zomato_price = m.zomato,
+       swiggy_price = m.zomato,
+       sort_order   = m.pos,
+       status       = 'active',
+       updated_at   = now()
+  FROM _bt_menu m JOIN _bt_cats k ON k.slug = m.cat
+ WHERE p.slug = m.slug
+   AND NOT EXISTS (SELECT 1 FROM products q WHERE lower(trim(q.name)) = lower(m.name));
+
 -- new dishes
 INSERT INTO products (category_id, name, slug, price, zomato_price, swiggy_price, sort_order, status, is_veg)
-SELECT k.id, m.name,
-       trim(both '-' from regexp_replace(lower(m.name), '[^a-z0-9]+', '-', 'g')),
+SELECT k.id, m.name, m.slug,
        round(m.zomato * 0.7), m.zomato, m.zomato, m.pos, 'active', true
   FROM _bt_menu m JOIN _bt_cats k ON k.slug = m.cat
- WHERE NOT EXISTS (SELECT 1 FROM products p WHERE lower(trim(p.name)) = lower(m.name));
+ WHERE NOT EXISTS (SELECT 1 FROM products p WHERE lower(trim(p.name)) = lower(m.name))
+   AND NOT EXISTS (SELECT 1 FROM products p WHERE p.slug = m.slug);
 
 -- everything not on the new menu is hidden (not deleted)
 UPDATE products SET status = 'inactive', updated_at = now()
