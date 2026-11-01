@@ -99,4 +99,8 @@ export class UpdateSettingsDto {
   /* WhatsApp notifications (merged over defaults; see notify.config.ts). */
   @IsOptional() @IsObject()
   notifyConfig?: Record<string, unknown>;
+
+  /* Home page: launch banner, price comparison, app tiles (merged; see storefront.config.ts). */
+  @IsOptional() @IsObject()
+  storefrontConfig?: Record<string, unknown>;
 }

@@ -26,6 +26,10 @@ export class Category {
   @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive!: boolean;
 
+  /* featured categories get their own section at the top of the home page */
+  @Column({ type: 'boolean', default: false })
+  featured!: boolean;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt!: Date;
 }

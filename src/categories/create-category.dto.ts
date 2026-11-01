@@ -15,4 +15,7 @@ export class CreateCategoryDto {
 
   @IsOptional() @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional() @IsBoolean()
+  featured?: boolean;
 }

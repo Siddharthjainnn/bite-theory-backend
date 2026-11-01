@@ -6,6 +6,16 @@ import { AuditService } from '../audit_logs/audit.service';
 import { CreateProductDto } from './create-product.dto';
 import { UpdateProductDto } from './update-product.dto';
 
+/* pg returns numeric as a string; the storefront wants numbers or null */
+const num = (v: unknown) => (v === null || v === undefined || v === '' ? null : Number(v));
+function appPrices(p: Product) {
+  return {
+    zomatoPrice: num(p.zomatoPrice),
+    swiggyPrice: num(p.swiggyPrice),
+    toingPrice: num(p.toingPrice),
+  };
+}
+
 function slugify(s: string): string {
   return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -40,7 +50,7 @@ export class ProductsService {
   async findAll() {
     const products = await this.repo.find({
       where: { status: In(['active', 'out_of_stock']) },
-      order: { id: 'DESC' },
+      order: { sortOrder: 'ASC', id: 'ASC' },
     });
     const inv = await this.repo.query(
       `SELECT product_id, quantity, stock_status FROM inventory`);
@@ -51,6 +61,7 @@ export class ProductsService {
       const soldOut = p.status === 'out_of_stock' || row?.stock_status === 'out_of_stock';
       return {
         ...p,
+        ...appPrices(p),
         stockStatus: soldOut ? 'out_of_stock' : (row?.stock_status || 'in_stock'),
         stockQty: row ? Number(row.quantity) : null,
       };
@@ -99,7 +110,8 @@ export class ProductsService {
     const saved = await this.repo.save(product);
 
     await this.audit.logUpdate('products', id, before, dto as any, req,
-      ['name', 'price', 'offerPrice', 'status', 'categoryId', 'isTodaysSpecial', 'isVeg']);
+      ['name', 'price', 'offerPrice', 'status', 'categoryId', 'isTodaysSpecial', 'isVeg',
+       'zomatoPrice', 'swiggyPrice', 'toingPrice']);
     return saved;
   }
 

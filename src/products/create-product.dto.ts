@@ -50,4 +50,10 @@ export class CreateProductDto {
   @IsOptional() @IsBoolean() isSpinWheel?: boolean;
   /* cook time in minutes; null clears it back to the store default */
   @IsOptional() @IsInt() @Min(1) @Max(120) prepMinutes?: number | null;
+
+  /* price of this dish on each app; null clears it (that app is left out of the comparison) */
+  @IsOptional() @IsNumber() @Min(0) @Max(100000) zomatoPrice?: number | null;
+  @IsOptional() @IsNumber() @Min(0) @Max(100000) swiggyPrice?: number | null;
+  @IsOptional() @IsNumber() @Min(0) @Max(100000) toingPrice?: number | null;
+  @IsOptional() @IsInt() @Min(0) @Max(100000) sortOrder?: number;
 }

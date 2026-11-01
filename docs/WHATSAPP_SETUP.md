@@ -30,6 +30,12 @@ Choose one route:
 | `bt_order_delayed` | Hi {{1}}, sorry, your Bite Theory order {{2}} is running a little late. It is now expected around {{3}}. We are getting it to you as fast as we can. |
 | `bt_kitchen_alert` | Bite Theory kitchen alert for order {{1}}: {{2}}. Open Live Orders: {{3}} to act on it. |
 
+   One more, for the Bhawarkua opening day. Submit it as category **Marketing** (Meta files announcements there), language English. It goes once to everyone who tapped "Notify me on opening day" on the home page, at the opening time set in Admin → Home page:
+
+| Name | Text |
+| --- | --- |
+| `bt_outlet_open` | Hi {{1}}, Bites Theory is now open in {{2}}! Come and visit us, or order online at our best price: {{3}} — Team Bite Theory |
+
    Meta asks for sample values for each variable when you submit. Approval usually takes minutes to a day.
 
 7. **Webhook.** In the app → WhatsApp → Configuration, set:
@@ -52,7 +58,7 @@ PUBLIC_SITE_URL=https://<your site>        # tracking links in messages
 
 ## Cost (India, as of October 2026)
 
-Utility templates cost about ₹0.145 each. A typical order sends 4–5 customer messages, about ₹0.60–0.75 per order, plus about ₹0.145 for each staff alert. Turning off "cooking started" saves one message per order. Messages you send by hand from the WhatsApp Business app stay free.
+Utility templates cost about ₹0.145 each; the one-off `bt_outlet_open` is Marketing, about ₹1.09 each. A typical order sends 4–5 customer messages, about ₹0.60–0.75 per order, plus about ₹0.145 for each staff alert. Turning off "cooking started" saves one message per order. Messages you send by hand from the WhatsApp Business app stay free.
 
 ## Opt-out
 

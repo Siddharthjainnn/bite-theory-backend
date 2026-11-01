@@ -40,6 +40,13 @@ export const TEMPLATES = {
     vars: ['order number', 'what needs doing', 'admin link'],
     text: 'Bite Theory kitchen alert for order {{1}}: {{2}}. Open Live Orders: {{3}} to act on it.',
   },
+  /** people who tapped "Notify me on opening day": sent once, at opening time.
+      An announcement, so Meta files it under MARKETING (not utility). */
+  outletOpen: {
+    name: 'bt_outlet_open',
+    vars: ['customer name', 'outlet area', 'site link'],
+    text: 'Hi {{1}}, Bites Theory is now open in {{2}}! Come and visit us, or order online at our best price: {{3}} — Team Bite Theory',
+  },
 } as const;
 
 export type TemplateKey = keyof typeof TEMPLATES;

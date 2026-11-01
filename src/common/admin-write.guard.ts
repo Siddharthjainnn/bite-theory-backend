@@ -32,6 +32,7 @@ export class AdminWriteGuard implements CanActivate {
     { method: 'POST', path: /^\/orders\/create-payment$/ },  // open razorpay order
     { method: 'POST', path: /^\/orders\/razorpay-webhook$/ }, // Razorpay server → us (signature-verified in controller)
     { method: 'POST', path: /^\/notify\/whatsapp\/webhook$/ }, // Meta → us (X-Hub-Signature-256 verified in controller)
+    { method: 'POST', path: /^\/storefront\/launch\/notify$/ }, // "Notify me on opening day" (5/min, unique by phone)
     { method: 'POST', path: /^\/orders\/[^/]+\/cancel$/ },      // customer cancels own order (user-token verified)
     // P0-1 / P0-3: `PATCH /orders/:id/status` and `PATCH /delivery-partners/:id/location`
     // REMOVED. Their only credential was the rider's sequential integer id, which

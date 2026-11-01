@@ -198,6 +198,10 @@ export class StoreSettings {
   @Column({ type: 'jsonb', name: 'notify_config', nullable: true })
   notifyConfig: Record<string, unknown> | null;
 
+  /* Home page: launch banner, price comparison, app tiles. See src/storefront/storefront.config.ts. */
+  @Column({ type: 'jsonb', name: 'storefront_config', nullable: true })
+  storefrontConfig: Record<string, unknown> | null;
+
   @Column({ type: 'timestamptz', name: 'updated_at', nullable: true })
   updatedAt: Date;
 }

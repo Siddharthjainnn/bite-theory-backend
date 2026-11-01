@@ -51,6 +51,21 @@ export class Product {
   @Column({ type: 'integer', name: 'prep_minutes', nullable: true })
   prepMinutes: number | null;
 
+  /* What the same dish costs on each app (their menu price, before GST).
+     NULL = not listed there; the comparison row skips that app. */
+  @Column({ type: 'numeric', name: 'zomato_price', nullable: true })
+  zomatoPrice: number | null;
+
+  @Column({ type: 'numeric', name: 'swiggy_price', nullable: true })
+  swiggyPrice: number | null;
+
+  @Column({ type: 'numeric', name: 'toing_price', nullable: true })
+  toingPrice: number | null;
+
+  /* order inside its category (lower first) */
+  @Column({ type: 'integer', name: 'sort_order', default: 0 })
+  sortOrder: number;
+
   // your enum product_status has values: 'active' | 'inactive'
   @Column({ type: 'enum', enum: ['active', 'inactive'], default: 'active' })
   status: string;

@@ -269,6 +269,12 @@ export class OutboxService implements OnModuleInit, OnModuleDestroy {
         WHERE RIGHT(regexp_replace(COALESCE(mobile, ''), '\\D', '', 'g'), 10) = $1`,
       [last10, optOut],
     );
+    /* STOP also takes them off the opening-day list (they may have no account) */
+    if (optOut)
+      await this.ds
+        .query(`DELETE FROM launch_subscribers WHERE RIGHT(phone, 10) = $1`, [last10])
+        .catch(() => undefined); // table absent before the storefront migration
+
   }
 
   /** Recent messages for the admin log (phones masked). */
