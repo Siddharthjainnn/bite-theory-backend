@@ -51,6 +51,7 @@ import { TiffinModule } from './tiffin/tiffin.module';
 import { DeliveryModule } from './delivery/delivery.module';
 import { NotifyModule } from './notify/notify.module';
 import { StorefrontModule } from './storefront/storefront.module';
+import { PosModule } from './pos/pos.module';
 
 @Module({
   imports: [
@@ -114,6 +115,7 @@ import { StorefrontModule } from './storefront/storefront.module';
     DeliveryModule,
     NotifyModule,
     StorefrontModule,
+    PosModule,
   ],
   controllers: [AppController],
   providers: [

@@ -35,6 +35,10 @@ import { verifyAdminJwt } from './admin-auth.guard';
 /** URL prefix (sans /api) → the sidebar section key that owns it. */
 const PATH_SECTION: { path: RegExp; section: string }[] = [
   { path: /^\/orders\/[^/]+\/refund/, section: 'payments' },
+  { path: /^\/pos\/reports/, section: 'pos_reports' },
+  { path: /^\/pos\/manage/, section: 'outlets' },     // cancel a bill: managers, not every cashier
+  { path: /^\/pos/, section: 'pos' },
+  { path: /^\/outlets/, section: 'outlets' },
   { path: /^\/order-items/, section: 'order_items' },
   { path: /^\/orders/, section: 'orders' },
   { path: /^\/delivery\/report/, section: 'reports' },
