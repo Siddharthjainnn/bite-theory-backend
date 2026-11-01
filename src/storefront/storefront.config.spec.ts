@@ -101,4 +101,26 @@ describe('storefront config', () => {
     expect(launchPhase(l, at)).toBe('open');
     expect(launchPhase({ ...l, enabled: false }, at)).toBe('off');
   });
+
+  it('Zomato rating: off until a real value is entered; out-of-range values are dropped', () => {
+    expect(normalizeStorefront(null).zomatoRating).toEqual({
+      enabled: false,
+      value: 0,
+      count: 0,
+    });
+    expect(
+      normalizeStorefront({
+        zomatoRating: { enabled: true, value: '4.27', count: '712' },
+      }).zomatoRating,
+    ).toEqual({ enabled: true, value: 4.3, count: 712 });
+    expect(
+      normalizeStorefront({ zomatoRating: { enabled: true, value: 7 } })
+        .zomatoRating.enabled,
+    ).toBe(false);
+    expect(
+      normalizeStorefront({
+        zomatoRating: { enabled: true, value: 4, count: -5 },
+      }).zomatoRating.count,
+    ).toBe(0);
+  });
 });

@@ -33,10 +33,19 @@ export interface PlatformTile {
   enabled: boolean;
 }
 
+/** The restaurant's real rating on Zomato, typed in by the owner and always
+    shown labelled "on Zomato". Never invented: off (and hidden) until set. */
+export interface ZomatoRating {
+  enabled: boolean;
+  value: number; // 1.0 – 5.0, one decimal; 0 = not set
+  count: number; // number of ratings on Zomato
+}
+
 export interface StorefrontConfig {
   launch: LaunchConfig;
   priceCompare: boolean;
   platforms: PlatformTile[];
+  zomatoRating: ZomatoRating;
 }
 
 export const PLATFORM_NAMES: Record<PlatformKey, string> = {
@@ -63,6 +72,7 @@ export const DEFAULT_STOREFRONT: StorefrontConfig = {
     autoNotify: true,
   },
   priceCompare: true,
+  zomatoRating: { enabled: false, value: 0, count: 0 },
   platforms: [
     { key: 'zomato', name: 'Zomato', url: '', enabled: true },
     {
@@ -158,10 +168,24 @@ export function normalizeStorefront(raw: unknown): StorefrontConfig {
     if (!seen.has(def.key)) platforms.push({ ...def, enabled: false });
   }
 
+  const z = (
+    r.zomatoRating && typeof r.zomatoRating === 'object' ? r.zomatoRating : {}
+  ) as Record<string, unknown>;
+  const value = Math.round(Number(z.value) * 10) / 10;
+  const count = Math.floor(Number(z.count));
+  const zomatoRating: ZomatoRating = {
+    value: value >= 1 && value <= 5 ? value : 0,
+    count: count > 0 && count < 10_000_000 ? count : 0,
+    enabled: false,
+  };
+  /* only shown when there is a real value to show */
+  zomatoRating.enabled = bool(z.enabled, false) && zomatoRating.value > 0;
+
   return {
     launch,
     priceCompare: bool(r.priceCompare, DEFAULT_STOREFRONT.priceCompare),
     platforms,
+    zomatoRating,
   };
 }
 

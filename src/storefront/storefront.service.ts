@@ -128,9 +128,7 @@ export class StorefrontService implements OnModuleInit, OnModuleDestroy {
     return [
       'phone,name,signed_up_at,notified_at',
       ...rows.map((r: any) =>
-        [r.phone, r.name, r.created_at, r.notified_at || '']
-          .map(q)
-          .join(','),
+        [r.phone, r.name, r.created_at, r.notified_at || ''].map(q).join(','),
       ),
     ].join('\n');
   }
